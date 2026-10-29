@@ -8,12 +8,13 @@ no tool knows or cares which one is wired in.
 from __future__ import annotations
 
 import json
+import secrets
 import time
 
 import httpx
 
 from ..errors import ToolExecutionError
-from .signing import SIGNATURE_HEADER, TIMESTAMP_HEADER, sign
+from .signing import NONCE_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER, sign
 
 
 class HostAgentDiagnostics:
@@ -31,10 +32,14 @@ class HostAgentDiagnostics:
     def _post(self, capability: str, payload: dict | None = None):
         body = json.dumps(payload or {}, separators=(",", ":")).encode("utf-8")
         timestamp = str(int(time.time()))
+        # Fresh per request: this is what makes a captured request useless to a
+        # replayer inside the 300-second timestamp window.
+        nonce = secrets.token_urlsafe(16)
         headers = {
             "content-type": "application/json",
             TIMESTAMP_HEADER: timestamp,
-            SIGNATURE_HEADER: sign(self.token, timestamp, body),
+            NONCE_HEADER: nonce,
+            SIGNATURE_HEADER: sign(self.token, timestamp, nonce, body),
         }
         try:
             response = httpx.post(

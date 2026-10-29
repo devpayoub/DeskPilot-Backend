@@ -87,11 +87,15 @@ class PasswordReset(models.Model):
     The agent sees only ``reference``. A human with the right role retrieves the
     secret once, before it expires — which keeps credentials out of the prompt, the
     step record and the audit row.
+
+    The column holds **ciphertext**, not the password. Keeping it out of the prompt
+    is only half the job; a database dump would otherwise hand over working
+    credentials. See ``crypto.py``.
     """
 
     reference = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     sam = models.CharField(max_length=64)
-    password = models.CharField(max_length=128)
+    password_ciphertext = models.TextField()
     force_change = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
@@ -102,6 +106,12 @@ class PasswordReset(models.Model):
 
     def __str__(self) -> str:
         return f"PasswordReset {self.reference} for {self.sam}"
+
+    def reveal_password(self) -> str:
+        """Decrypt for the one authorised human who asks for it."""
+        from .crypto import decrypt
+
+        return decrypt(self.password_ciphertext)
 
     @property
     def is_expired(self) -> bool:

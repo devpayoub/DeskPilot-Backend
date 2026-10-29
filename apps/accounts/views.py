@@ -14,6 +14,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import CustomUser
@@ -121,3 +122,27 @@ class MeView(APIView):
                 "memberships": [serialize_membership(request.user)],
             }
         )
+
+
+class LogoutView(APIView):
+    """Revoke a refresh token server-side.
+
+    Clearing a cookie only forgets the token on that one browser. Without this
+    endpoint a stolen refresh token stays valid for its whole lifetime, because
+    nothing on the server records that the session ended. Blacklisting is what
+    makes "log out everywhere" and incident response possible at all.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        raw = str((request.data or {}).get("refresh") or "").strip()
+        if raw:
+            try:
+                RefreshToken(raw).blacklist()
+            except TokenError:
+                # Already expired, already blacklisted, or simply not a refresh
+                # token. None of those are worth failing the logout over: the
+                # caller's intent is "end the session", and it is ending.
+                pass
+        return Response(status=status.HTTP_204_NO_CONTENT)

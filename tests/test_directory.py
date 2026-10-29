@@ -102,8 +102,11 @@ def test_reset_password_never_returns_the_secret(technician_user, seeded):
 
     # The secret is retrievable by a human, once.
     stored = retrieve_password(result["password_reference"])
-    assert len(stored.password) >= 16
+    assert len(stored.reveal_password()) >= 16
     assert stored.sam == SAM
+    # ...but the column itself must not hold it in the clear.
+    assert SAM not in stored.password_ciphertext
+    assert stored.password_ciphertext.startswith("gAAAAA"), "Fernet token expected"
 
 
 def _context_with_approval_recorder(user):

@@ -38,7 +38,7 @@ from .errors import (
     ToolNotFound,
     ToolValidationError,
 )
-from .redaction import args_hash, redact_args
+from .redaction import args_hash, redact_args, redact_text
 from .registry import get_tool
 from .risk import RiskClass
 
@@ -226,7 +226,9 @@ def execute_tool(name: str, args: Mapping[str, Any] | None, ctx: ToolContext) ->
                 args_hash=arg_hash,
                 args_redacted=redacted,
                 error_code=error_code,
-                error_message=error_message,
+                # Third-party text (adapter messages, SDK exceptions) can quote a
+                # credential back at us. Scrub before it becomes a permanent row.
+                error_message=redact_text(error_message),
                 duration_ms=int((time.monotonic() - started) * 1000),
                 trace_id=ctx.trace_id,
                 transport=ctx.transport,

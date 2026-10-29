@@ -10,7 +10,8 @@ The security posture is deliberately minimal:
 * it exposes a fixed **allowlist of eight capabilities**, not a generic dispatcher;
 * each capability declares exactly which arguments it accepts, and anything else
   is a 400 rather than being silently dropped;
-* every request must be HMAC-signed with a timestamp (see ``auth.py``);
+* every request must be HMAC-signed over timestamp, a fresh nonce and the body
+  (see ``auth.py``), so a captured request cannot be replayed;
 * there is no write capability at all — this build cannot change the host.
 
 Run:
@@ -31,7 +32,7 @@ from fastapi.responses import JSONResponse
 from toolcore.adapters import LocalDiagnostics
 from toolcore.errors import ToolCoreError
 
-from .auth import SIGNATURE_HEADER, TIMESTAMP_HEADER, verify
+from .auth import NONCE_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER, NonceCache, verify
 
 logger = logging.getLogger("deskpilot.hostagent")
 
@@ -51,10 +52,14 @@ CAPABILITIES: dict[str, tuple[str, frozenset[str]]] = {
 def create_app(
     diagnostics: Any | None = None,
     secret: str | None = None,
+    nonce_cache: NonceCache | None = None,
 ) -> FastAPI:
     """Build the app. Dependencies are injectable so tests never touch the host."""
     adapter = diagnostics if diagnostics is not None else LocalDiagnostics()
     token = secret if secret is not None else os.getenv("HOSTAGENT_TOKEN", "")
+    # One cache per app, so two app instances (as in tests) cannot mask each
+    # other's replays.
+    nonces = nonce_cache if nonce_cache is not None else NonceCache()
 
     app = FastAPI(
         title="DeskPilot Host Agent",
@@ -65,10 +70,11 @@ def create_app(
     async def require_signature(
         request: Request,
         timestamp: str | None = Header(default=None, alias=TIMESTAMP_HEADER),
+        nonce: str | None = Header(default=None, alias=NONCE_HEADER),
         signature: str | None = Header(default=None, alias=SIGNATURE_HEADER),
     ) -> None:
         body = await request.body()
-        ok, reason = verify(token, timestamp, body, signature)
+        ok, reason = verify(token, timestamp, nonce, body, signature, nonce_cache=nonces)
         if not ok:
             logger.warning("rejected host agent request: %s", reason)
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=reason)

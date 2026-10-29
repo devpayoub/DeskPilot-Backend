@@ -31,6 +31,7 @@ from toolcore import registry
 from toolcore.base import ToolContext
 from toolcore.errors import ApprovalRequired, ToolCoreError
 from toolcore.execute import execute_tool
+from toolcore.redaction import redact_deep
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,24 @@ PROMPT_VERSION = "helpdesk_v1"
 _PROMPT_TOP_ROWS = 8
 _PROMPT_STR_CHARS = 200
 _MAX_OBSERVATION_CHARS = 3500
+
+
+def _redaction_secrets() -> tuple[str, ...]:
+    """Configured secrets to strip by exact value, whatever their shape.
+
+    The pattern-based rules in ``redact_deep`` catch anything that *looks* like a
+    credential. This catches the ones we already know, so a provider with an
+    unusual key format is still covered.
+    """
+    return tuple(
+        value
+        for value in (
+            getattr(settings, "LLM_API_KEY", ""),
+            getattr(settings, "HOSTAGENT_TOKEN", ""),
+            getattr(settings, "VAULT_ENCRYPTION_KEY", ""),
+        )
+        if value and len(value) >= 8
+    )
 
 
 class AgentBudgetExceeded(Exception):
@@ -151,9 +170,14 @@ def run_agent(
     system = _system_prompt()
 
     def emit(entry: dict) -> None:
-        transcript.append(entry)
+        # Every step passes through here on its way to the database and the console,
+        # so this is the one place that has to be right. Provider error bodies are
+        # third-party text: they are stored, rendered, and — via the transcript —
+        # fed back to the model, which is the worst place for a leaked credential.
+        safe = redact_deep(entry, secrets=_redaction_secrets())
+        transcript.append(safe)
         if on_step is not None:
-            on_step(entry)
+            on_step(safe)
 
     def account(usage: ChatUsage) -> Decimal | None:
         nonlocal prompt_tokens, completion_tokens, cost_total

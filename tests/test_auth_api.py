@@ -98,3 +98,61 @@ def test_me_reports_the_real_role_inside_one_synthetic_workspace(api_client, rol
     membership = body["memberships"][0]
     assert membership["role"] == role, "the console gates the UI on this"
     assert membership["organization_id"] == "deskpilot"
+
+
+# ---------------------------------------------------------------------------
+# Logout / revocation
+# ---------------------------------------------------------------------------
+LOGOUT = "/api/v1/auth/logout/"
+REFRESH = "/api/v1/auth/refresh/"
+
+
+def test_logout_blacklists_the_refresh_token(api_client, technician_user):
+    """Clearing a cookie only forgets the token locally.
+
+    Without a server-side blacklist a stolen refresh token stays valid for its
+    whole lifetime no matter what the user does, which makes "log out everywhere"
+    and incident response impossible.
+    """
+    login = api_client.post(
+        LOGIN, {"email": technician_user.email, "password": PASSWORD}, format="json"
+    ).json()
+    access, refresh = login["access"], login["refresh"]
+
+    assert api_client.post(
+        LOGOUT, {"refresh": refresh}, format="json", HTTP_AUTHORIZATION=f"Bearer {access}"
+    ).status_code == 204
+
+    reused = api_client.post(REFRESH, {"refresh": refresh}, format="json")
+    assert reused.status_code == 401, "a logged-out refresh token must not mint a new access token"
+
+
+def test_logout_requires_authentication(api_client):
+    assert api_client.post(LOGOUT, {"refresh": "whatever"}, format="json").status_code == 401
+
+
+def test_logout_without_a_refresh_token_is_still_a_success(api_client, technician_user):
+    """Ending a session must not fail because the client had nothing to revoke."""
+    login = api_client.post(
+        LOGIN, {"email": technician_user.email, "password": PASSWORD}, format="json"
+    ).json()
+
+    response = api_client.post(
+        LOGOUT, {}, format="json", HTTP_AUTHORIZATION=f"Bearer {login['access']}"
+    )
+
+    assert response.status_code == 204
+
+
+def test_refresh_rotates_and_blacklists_the_previous_token(api_client, technician_user):
+    """Rotation means a leaked refresh token is single-use."""
+    login = api_client.post(
+        LOGIN, {"email": technician_user.email, "password": PASSWORD}, format="json"
+    ).json()
+
+    first = api_client.post(REFRESH, {"refresh": login["refresh"]}, format="json")
+    assert first.status_code == 200
+    assert first.json().get("refresh"), "rotation must hand back a new refresh token"
+
+    replay = api_client.post(REFRESH, {"refresh": login["refresh"]}, format="json")
+    assert replay.status_code == 401, "the old refresh token must be dead after rotation"

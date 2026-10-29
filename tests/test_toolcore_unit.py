@@ -6,7 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from toolcore import Tool, registry
 from toolcore.errors import ToolNotFound, ToolValidationError
-from toolcore.redaction import args_hash, normalise_text, redact_args
+from toolcore.redaction import (
+    args_hash,
+    normalise_text,
+    redact_args,
+    redact_deep,
+    redact_text,
+)
 from toolcore.risk import RiskClass
 
 
@@ -172,3 +178,70 @@ def test_register_if_absent_is_idempotent(temp_tools):
 def test_unknown_tool_raises(temp_tools):
     with pytest.raises(ToolNotFound):
         registry.get_tool("definitely_not_registered")
+
+
+# ---------------------------------------------------------------------------
+# Free-text redaction
+#
+# ``redact_args`` masks by key name. These mask by shape, because provider error
+# bodies and SDK exceptions are third-party prose: they land in a database column
+# and are rendered in the console, so they need scrubbing before storage.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "text,secret_fragment",
+    [
+        ("Incorrect API key provided: sk-test-abcdef0123456789", "sk-test-abcdef0123456789"),
+        ("upstream said Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc", "eyJhbGciOiJIUzI1NiJ9"),
+        ("connect failed for postgres://deskpilot:hunter2@db:5432/deskpilot", "hunter2"),
+        ("provider error: api_key=abc123def456 rejected", "abc123def456"),
+        ("bad login: password=Sup3rS3cret!", "Sup3rS3cret!"),
+    ],
+)
+def test_redact_text_masks_credentials_by_shape(text, secret_fragment):
+    cleaned = redact_text(text)
+
+    assert secret_fragment not in cleaned
+    assert "***" in cleaned
+
+
+def test_redact_text_masks_a_known_secret_of_any_shape():
+    """Patterns cannot cover every provider's key format, so exact values are passed too."""
+    odd_key = "zzz-not-a-recognisable-format-42"
+
+    cleaned = redact_text(f"rejected key {odd_key}", secrets=(odd_key,))
+
+    assert odd_key not in cleaned
+
+
+def test_redact_text_ignores_short_secrets_to_avoid_shredding_prose():
+    """Replacing a 3-character 'secret' would mangle ordinary words, not protect anything."""
+    assert redact_text("the cab is here", secrets=("cab",)) == "the cab is here"
+
+
+def test_redact_text_keeps_the_message_readable():
+    """Redaction must not destroy the explanation — a blank trace is its own failure."""
+    cleaned = redact_text("Incorrect API key provided: sk-test-abcdef0123456789")
+
+    assert cleaned.startswith("Incorrect API key provided")
+    assert cleaned.endswith("***")
+
+
+def test_redact_text_bounds_unbounded_third_party_text():
+    cleaned = redact_text("x" * 5000)
+
+    assert len(cleaned) < 1000
+
+
+def test_redact_deep_reaches_strings_inside_nested_structures():
+    entry = {
+        "step": 3,
+        "observation": {"items": [{"error": "token=abc123def456"}]},
+        "ok": True,
+    }
+
+    cleaned = redact_deep(entry)
+
+    assert cleaned["step"] == 3
+    assert cleaned["ok"] is True
+    assert "abc123def456" not in str(cleaned)
+    assert "***" in cleaned["observation"]["items"][0]["error"]

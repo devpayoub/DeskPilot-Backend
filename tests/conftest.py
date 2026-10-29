@@ -20,6 +20,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.accounts.models import Role
 from tests.factories import PASSWORD, make_user  # noqa: F401  (PASSWORD re-exported)
 from tests.fakes import FakeDiagnostics
+from toolcore import registry
 from toolcore.tools import register_all
 
 # Reachable in tests so the LDAP contract suite can talk to a local container.
@@ -65,9 +66,19 @@ def no_external_calls(settings, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def tool_registry():
-    """Guarantee the catalog is loaded; idempotent, so repeated calls are safe."""
+    """Guarantee the catalog is loaded, then restore it exactly.
+
+    The registry is a module-level dict, so a test that registers an ad-hoc tool
+    leaks it into every later test — which shows up as a baffling failure in the
+    catalogue tests rather than where the leak happened. Snapshotting and restoring
+    makes that impossible instead of merely unlikely.
+    """
     register_all()
+    snapshot = registry.list_tools()
     yield
+    registry.clear()
+    for tool in snapshot:
+        registry.register(tool)
     register_all()
 
 

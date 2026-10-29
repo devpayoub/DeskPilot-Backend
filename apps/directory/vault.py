@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 
+from .crypto import encrypt
 from .models import PasswordReset
 
 logger = logging.getLogger(__name__)
@@ -13,11 +14,26 @@ logger = logging.getLogger(__name__)
 TTL_MINUTES = 15
 
 
+def purge_expired() -> int:
+    """Delete expired credentials. Returns the number removed.
+
+    ``expires_at`` alone only blocks *retrieval*; without this the plaintext row
+    survives forever, so a database dump would still yield every password the
+    agent ever generated — including ones still valid somewhere else. Expiry has
+    to mean deletion, not just a closed door.
+    """
+    removed, _ = PasswordReset.objects.filter(expires_at__lte=timezone.now()).delete()
+    if removed:
+        logger.info("purged %d expired password reset record(s)", removed)
+    return removed
+
+
 def store_password(sam: str, password: str, force_change: bool = True) -> str:
     """Persist a generated password and return the opaque reference the agent sees."""
+    purge_expired()
     record = PasswordReset.objects.create(
         sam=sam,
-        password=password,
+        password_ciphertext=encrypt(password),
         force_change=force_change,
         expires_at=timezone.now() + timedelta(minutes=TTL_MINUTES),
     )

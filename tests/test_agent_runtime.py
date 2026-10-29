@@ -9,6 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from pydantic import BaseModel
 
 from apps.agent.models import AgentRun, AgentStep
 from apps.agent.runtime import AgentBudgetExceeded, AgentLimits, run_agent
@@ -24,6 +25,10 @@ from toolcore.risk import RiskClass
 pytestmark = pytest.mark.django_db
 
 MODEL = "test-model"
+
+
+class _NoArgs(BaseModel):
+    """An argument-less input schema for ad-hoc test tools."""
 
 
 def scripted(actions: list[dict], *, model: str = MODEL, prompt_tokens: int = 100,
@@ -348,3 +353,71 @@ def test_a_provider_refusal_fails_fast_and_keeps_the_reason(ticket):
     assert step.status == "error"
     assert step.error_code == "llm_error"
     assert "Daily check-in required" in str(step.result), "the trace must explain itself"
+
+
+def test_a_credential_in_a_provider_error_is_never_persisted(ticket, settings):
+    """Provider text is third-party text: it is stored, rendered, and re-prompted.
+
+    An error body that quotes the API key back at us would otherwise put that key
+    in the database, in the console, and in the next prompt — the worst of the
+    three, because the prompt leaves the machine.
+    """
+    key = "sk-test-0000-fake-1111-not-a-real-key"
+    settings.LLM_API_KEY = key
+
+    def leaking(system, user, *, timeout):
+        raise ChatProviderError(
+            f"Incorrect API key provided: {key}. Authorization: Bearer {key}"
+        )
+
+    run = execute_run(create_run(ticket), llm_call=leaking)
+
+    step = run.steps.get(step_no=1)
+    stored = str(step.result)
+
+    assert key not in stored, "the key must never reach the database"
+    assert "sk-test-0000-fake" not in stored
+    assert "***" in stored, "the redaction must be visible, not silent"
+    # The explanation still has to survive: redaction must not destroy the trace.
+    assert "Incorrect API key provided" in stored
+    assert run.status == AgentRun.Status.FAILED
+
+
+def test_a_credential_in_a_tool_observation_is_redacted_before_the_next_prompt(
+    ticket, settings
+):
+    """The transcript goes back to the model, so it is the highest-risk sink."""
+    key = "sk-test-2222-fake-3333-not-a-real-key"
+    settings.LLM_API_KEY = key
+
+    def leaky_tool(ctx, args):
+        return {"ok": False, "error": f"upstream rejected {key}"}
+
+    registry.register(
+        Tool(
+            name="leaky_probe",
+            description="returns an error containing a credential",
+            handler=leaky_tool,
+            input_model=_NoArgs,
+            risk_class=RiskClass.READ,
+            domain="diagnostics",
+        )
+    )
+
+    llm = scripted(
+        [
+            {"thought": "probe", "tool": "leaky_probe", "args": {}},
+            {"thought": "done", "final": FINAL},
+        ]
+    )
+    try:
+        run = execute_run(create_run(ticket), llm_call=llm)
+    finally:
+        # The registry is process-global: leaving a test tool behind would show up
+        # in the catalogue tests and in the prompt for every later run.
+        registry.unregister("leaky_probe")
+
+    prompts = "\n".join(llm.seen_prompts)
+    assert key not in prompts, "a leaked key must not be sent to the provider"
+    assert "***" in prompts
+    assert run.status != AgentRun.Status.FAILED

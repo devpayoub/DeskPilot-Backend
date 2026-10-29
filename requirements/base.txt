@@ -16,3 +16,7 @@ channels-redis>=4.2,<5
 pydantic>=2.11,<3
 psutil==6.1.0
 openai>=1.40,<3
+# Fernet, for encrypting generated directory passwords at rest (apps/directory/crypto.py).
+# Declared explicitly: it was arriving transitively, which means a future dependency
+# bump could have removed it without anyone noticing until the vault broke.
+cryptography>=43,<51

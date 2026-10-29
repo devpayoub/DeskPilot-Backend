@@ -12,6 +12,7 @@ from apps.common.pagination import DefaultPagination
 from apps.common.permissions import IsServiceDeskOrAbove, IsTechnicianOrAbove
 
 from .adapters import DatabaseDirectory
+from .crypto import VaultDecryptionError
 from .models import Device, Employee
 from .vault import retrieve_password
 
@@ -96,6 +97,18 @@ class PasswordResetRetrievalView(APIView):
                 status=status.HTTP_410_GONE,
             )
 
+        try:
+            password = record.reveal_password()
+        except VaultDecryptionError as exc:
+            # The row exists and is live, but the key that wrote it is gone. Say so
+            # rather than returning an empty string the operator would paste into a
+            # directory.
+            logger.error("vault decryption failed reference=%s", record.reference)
+            return Response(
+                {"error": {"code": "undecryptable", "message": str(exc)}},
+                status=status.HTTP_410_GONE,
+            )
+
         logger.info(
             "password retrieved reference=%s sam=%s by=%s",
             record.reference,
@@ -105,7 +118,7 @@ class PasswordResetRetrievalView(APIView):
         return Response(
             {
                 "sam": record.sam,
-                "password": record.password,
+                "password": password,
                 "force_change": record.force_change,
                 "expires_at": record.expires_at,
                 "note": "This value is shown once and is not recoverable afterwards.",

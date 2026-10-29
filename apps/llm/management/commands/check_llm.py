@@ -36,7 +36,9 @@ class Command(BaseCommand):
         self.stdout.write("Configuration")
         self.stdout.write(f"  base URL   {base_url}")
         self.stdout.write(f"  model      {model}")
-        self.stdout.write(f"  api key    {'set (' + key[:6] + '…)' if key else 'MISSING'}")
+        # Last four characters only. Enough to tell two keys apart while debugging,
+        # not enough to help anyone who reads the terminal scrollback or a pasted log.
+        self.stdout.write(f"  api key    {'set (…' + key[-4:] + ')' if key else 'MISSING'}")
         self.stdout.write(f"  json mode  response_format=json_object")
         self.stdout.write("")
 

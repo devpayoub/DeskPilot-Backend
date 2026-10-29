@@ -7,6 +7,7 @@ sensitive is ever defaulted to something real.
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
 import dj_database_url
@@ -50,6 +51,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # third party
     "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
     "corsheaders",
     "channels",
@@ -148,6 +150,30 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "apps.common.pagination.DefaultPagination",
     "PAGE_SIZE": 25,
     "EXCEPTION_HANDLER": "apps.common.exceptions.api_exception_handler",
+    # Without a throttle, /auth/login/ is an unlimited password-guessing oracle.
+    # Scoped per client IP (anon) and per user, so one noisy caller cannot lock
+    # everyone else out.
+    "DEFAULT_THROTTLE_CLASSES": (
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ),
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("THROTTLE_ANON", "60/min"),
+        "user": os.getenv("THROTTLE_USER", "600/min"),
+    },
+}
+
+# Lifetimes are stated explicitly rather than inherited from the library defaults,
+# because the console's cookie max-age is derived from them and the two drifting
+# apart is silent. Rotation + blacklist are what make logout and token theft
+# recoverable: a refresh token is single-use and can be revoked server-side.
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": False,
+    "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
 SPECTACULAR_SETTINGS = {
@@ -157,7 +183,10 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
 }
 
-CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+CORS_ALLOWED_ORIGINS = env_list(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://127.0.0.1:3000",
+)
 
 # ---------------------------------------------------------------------------
 # Cache / Celery
@@ -233,7 +262,19 @@ DIRECTORY_BACKEND = os.getenv("DIRECTORY_BACKEND", "fake")
 LDAP_URI = os.getenv("LDAP_URI", "ldap://localhost:3890")
 LDAP_BASE_DN = os.getenv("LDAP_BASE_DN", "dc=deskpilot,dc=test")
 LDAP_BIND_DN = os.getenv("LDAP_BIND_DN", "cn=admin,dc=deskpilot,dc=test")
-LDAP_BIND_PASSWORD = os.getenv("LDAP_BIND_PASSWORD", "admin")
+LDAP_BIND_PASSWORD = os.getenv("LDAP_BIND_PASSWORD", "")
+if DIRECTORY_BACKEND == "ldap" and not LDAP_BIND_PASSWORD:
+    # Fail closed. A bind password that silently defaults to a well-known string is
+    # worse than a startup error: it works, so nobody notices it is wrong.
+    raise RuntimeError(
+        "DIRECTORY_BACKEND=ldap requires LDAP_BIND_PASSWORD. "
+        "There is deliberately no default."
+    )
+
+# Passphrase that encrypts generated passwords at rest. Any long random string is
+# fine — it is stretched with SHA-256 into a Fernet key. When unset it is derived
+# from SECRET_KEY so a fresh clone runs; prod.py requires it explicitly.
+VAULT_ENCRYPTION_KEY = os.getenv("VAULT_ENCRYPTION_KEY", "")
 
 # ---------------------------------------------------------------------------
 # Logging

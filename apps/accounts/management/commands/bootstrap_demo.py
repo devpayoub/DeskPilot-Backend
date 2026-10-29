@@ -7,6 +7,7 @@ them for secrets.
 """
 from __future__ import annotations
 
+from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 
@@ -47,7 +48,26 @@ DEMO_TICKETS = [
 class Command(BaseCommand):
     help = "Create demo users, seed tool policies and the directory, and add sample tickets."
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Allow running outside DEBUG. Needed because this sets a known password.",
+        )
+
     def handle(self, *args, **options):
+        # The password below is public — it is in a public repository. Creating an
+        # is_staff account with it outside development is a backdoor, so refuse
+        # unless someone deliberately overrides.
+        if not settings.DEBUG and not options["force"]:
+            self.stderr.write(
+                self.style.ERROR(
+                    "Refusing to seed demo accounts with the published development "
+                    "password while DEBUG is off. Pass --force if this is intentional."
+                )
+            )
+            raise SystemExit(1)
+
         for email, display_name, role in USERS:
             user, created = CustomUser.objects.get_or_create(
                 email=email, defaults={"display_name": display_name, "role": role}

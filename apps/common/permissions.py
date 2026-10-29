@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from rest_framework.permissions import BasePermission
 
-from apps.accounts.models import ROLE_RANK, Role
+from apps.accounts.models import ROLE_RANK, Role, effective_role
 
 
 class MinRole(BasePermission):
@@ -21,7 +21,10 @@ class MinRole(BasePermission):
             return False
         if getattr(user, "is_superuser", False):
             return True
-        return ROLE_RANK.get(user.role, -1) >= ROLE_RANK[self.min_role]
+        # The role for *this request*: the membership's role when a tenant was
+        # resolved, the field on the user otherwise. Reading ``user.role``
+        # directly would ignore the organisation the caller is acting in.
+        return ROLE_RANK.get(effective_role(user), -1) >= ROLE_RANK[self.min_role]
 
 
 class IsAdmin(MinRole):

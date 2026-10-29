@@ -172,6 +172,9 @@ def _agent_context(run: AgentRun, *, approval_token: str | None, on_approval) ->
         transport="internal",
         approval_token=approval_token,
         on_approval_required=on_approval,
+        # The run inherits its ticket's account, so the audit rows this run writes
+        # stay inside the tenant that raised the ticket.
+        organization=run.ticket.organization,
     )
 
 

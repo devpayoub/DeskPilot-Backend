@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     # local
     "apps.common",
     "apps.accounts",
+    "apps.organizations",
     "apps.llm",
     "apps.helpdesk",
     "apps.directory",
@@ -143,7 +144,10 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 # ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # Resolves the acting organisation in the same step as the token, so every
+        # org-scoped permission sees a tenant. See apps/organizations/authentication.py
+        # for why this is not middleware.
+        "apps.organizations.authentication.TenantJWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",

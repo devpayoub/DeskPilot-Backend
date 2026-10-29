@@ -30,17 +30,30 @@ class StatsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Every KPI is scoped to the organisation the caller is acting in. A
+        # dashboard that counts another tenant's tickets is worse than no dashboard.
+        organization = getattr(request, "organization", None)
+
         tickets = Ticket.objects.filter(is_eval=False)
+        runs = AgentRun.objects.all()
+        invocations = ToolInvocation.objects.all()
+        pending = ApprovalRequest.objects.filter(status=ApprovalRequest.Status.PENDING)
+        if organization is not None:
+            tickets = tickets.filter(organization=organization)
+            runs = runs.filter(ticket__organization=organization)
+            invocations = invocations.filter(organization=organization)
+            pending = pending.filter(run__ticket__organization=organization)
+
         touched = tickets.exclude(ai_disposition="")
         resolved = touched.filter(ai_disposition=Ticket.Disposition.AUTO_RESOLVED)
 
         durations = [
             (run.finished_at - run.started_at).total_seconds() * 1000
-            for run in AgentRun.objects.exclude(started_at=None).exclude(finished_at=None)
+            for run in runs.exclude(started_at=None).exclude(finished_at=None)
         ]
         costs = [
             float(run.cost_usd)
-            for run in AgentRun.objects.exclude(cost_usd=None)
+            for run in runs.exclude(cost_usd=None)
         ]
 
         return Response(
@@ -54,15 +67,11 @@ class StatsView(APIView):
                 "auto_resolution_rate": round(resolved.count() / touched.count(), 3)
                 if touched.count()
                 else None,
-                "pending_approvals": ApprovalRequest.objects.filter(
-                    status=ApprovalRequest.Status.PENDING
-                ).count(),
+                "pending_approvals": pending.count(),
                 # Denied attempts: the evidence that the guardrails are doing work.
-                "blocked_actions": ToolInvocation.objects.filter(
-                    outcome="denied"
-                ).count(),
-                "runs_total": AgentRun.objects.count(),
-                "runs_failed": AgentRun.objects.filter(status=AgentRun.Status.FAILED).count(),
+                "blocked_actions": invocations.filter(outcome="denied").count(),
+                "runs_total": runs.count(),
+                "runs_failed": runs.filter(status=AgentRun.Status.FAILED).count(),
                 "p95_latency_ms": _percentile(durations, 0.95),
                 "mean_cost_usd": round(sum(costs) / len(costs), 6) if costs else None,
                 "priced_runs": len(costs),

@@ -69,6 +69,18 @@ class Ticket(models.Model):
         blank=True,
         help_text="Host the ticket concerns. Used later for scope binding.",
     )
+    # The account this ticket belongs to. Nullable only so rows written before
+    # tenancy existed can be migrated; the API always sets it. PROTECT rather than
+    # CASCADE because deleting a customer account should be a deliberate act, not a
+    # side effect that silently takes their ticket history with it.
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="tickets",
+        help_text="The account this ticket belongs to.",
+    )
 
     # Eval runs create tickets through the same service as production. Without this
     # flag the harness would contaminate the very metrics the dashboard reports.
@@ -93,6 +105,7 @@ class Ticket(models.Model):
         indexes = [
             models.Index(fields=["status", "-created_at"]),
             models.Index(fields=["ai_disposition", "-created_at"]),
+            models.Index(fields=["organization", "-created_at"]),
         ]
 
     def __str__(self) -> str:

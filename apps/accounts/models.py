@@ -79,3 +79,21 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
 
     def has_role_at_least(self, role: str) -> bool:
         return self.role_rank >= ROLE_RANK[role]
+
+
+def effective_role(user) -> str:
+    """The role to authorise against.
+
+    Once tenancy is in play a person's role is a property of *which organisation
+    they are acting in*, not of the person. ``TenantJWTAuthentication`` sets
+    ``user.active_role`` from the resolved membership; when no tenant was resolved
+    — a management command, a fixture, a single-workspace deployment — the field on
+    ``CustomUser`` is still the answer.
+
+    Kept as a free function rather than a ``CustomUser`` property because Django
+    fields cannot be shadowed by a property of the same name, and every existing
+    call site reads ``user.role``.
+    """
+    if user is None:
+        return ""
+    return getattr(user, "active_role", None) or getattr(user, "role", "") or ""

@@ -73,7 +73,11 @@ class ToolInvokeView(APIView):
         if not isinstance(args, dict):
             return _error("invalid_arguments", "'args' must be an object.", status.HTTP_400_BAD_REQUEST)
 
-        ctx = build_context(request.user, dry_run=bool(body.get("dry_run", False)))
+        ctx = build_context(
+            request.user,
+            dry_run=bool(body.get("dry_run", False)),
+            organization=getattr(request, "organization", None),
+        )
 
         try:
             result = execute_tool(name, args, ctx)
@@ -149,6 +153,9 @@ class ToolInvocationListView(APIView):
 
     def get(self, request):
         queryset = ToolInvocation.objects.all()
+        organization = getattr(request, "organization", None)
+        if organization is not None:
+            queryset = queryset.filter(organization=organization)
         tool_name = request.query_params.get("tool")
         outcome = request.query_params.get("outcome")
         if tool_name:
@@ -168,6 +175,9 @@ class ApprovalListView(APIView):
     def get(self, request):
         approvals.expire_stale()
         queryset = ApprovalRequest.objects.select_related("decided_by", "run")
+        organization = getattr(request, "organization", None)
+        if organization is not None:
+            queryset = queryset.filter(run__ticket__organization=organization)
         wanted = request.query_params.get("status")
         if wanted:
             queryset = queryset.filter(status=wanted)

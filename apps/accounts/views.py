@@ -17,14 +17,14 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.organizations.services import ensure_membership
+
 from .models import CustomUser
 
-# DeskPilot is a single-workspace product. The console's session model is built
-# around organisations, so it is handed one synthetic membership rather than
-# having that whole layer rewritten. `role` is the real DeskPilot role.
-WORKSPACE_ID = "deskpilot"
+# DeskPilot used to be one hardcoded workspace. Memberships are real now, so the
+# session reports whatever the database says; accounts that predate tenancy are
+# given a membership in the default organisation on first login.
 WORKSPACE_NAME = "DeskPilot"
-WORKSPACE_SLUG = "deskpilot"
 
 
 def _error(code: str, message: str, http_status: int) -> Response:
@@ -49,12 +49,25 @@ def serialize_user(user) -> dict:
     }
 
 
-def serialize_membership(user) -> dict:
+def serialize_membership(membership) -> dict:
+    """One membership, in the shape the console's ``Membership`` DTO expects.
+
+    ``role`` is the role **in that organisation**. The same person can hold a
+    different one in another account, which is the whole reason this is a row and
+    not a field on the user.
+    """
+    organization = membership.organization
     return {
-        "organization_id": WORKSPACE_ID,
-        "organization_name": WORKSPACE_NAME,
-        "organization_slug": WORKSPACE_SLUG,
-        "role": user.role,
+        "organization_id": str(organization.pk),
+        "organization_name": organization.name,
+        "organization_slug": organization.slug,
+        "role": membership.role,
+        "department": (
+            {"id": membership.department.pk, "name": membership.department.name}
+            if membership.department_id
+            else None
+        ),
+        "is_owner": membership.is_owner,
     }
 
 
@@ -101,6 +114,10 @@ class LoginView(APIView):
             )
 
         refresh = RefreshToken.for_user(user)
+        # Sign-in is the point where an account that predates tenancy (or was
+        # created by a fixture) gets its place in an organisation. Doing it here
+        # rather than on every request keeps the write off the read path.
+        ensure_membership(user)
         return Response(
             {
                 "access": str(refresh.access_token),
@@ -111,15 +128,27 @@ class LoginView(APIView):
 
 
 class MeView(APIView):
-    """The current session: who you are, and the workspace you are acting in."""
+    """The current session: who you are, and the organisations you may act in."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        memberships = list(
+            request.user.memberships.select_related("organization", "department")
+            .filter(is_active=True, organization__is_active=True)
+            .order_by("created_at")
+        )
+        # Belt and braces: a user with no membership cannot render the console at
+        # all, and /auth/me/ is the first call it makes.
+        if not memberships:
+            memberships = [ensure_membership(request.user)]
+
+        active = request.membership or memberships[0]
         return Response(
             {
                 "user": serialize_user(request.user),
-                "memberships": [serialize_membership(request.user)],
+                "memberships": [serialize_membership(m) for m in memberships],
+                "active_organization": serialize_membership(active),
             }
         )
 

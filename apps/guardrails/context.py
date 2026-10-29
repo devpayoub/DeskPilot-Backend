@@ -8,6 +8,7 @@ tool objects.
 from __future__ import annotations
 
 import uuid
+from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -16,6 +17,7 @@ from django.conf import settings
 from toolcore.adapters import LocalDiagnostics, LdapDirectory, build_remediation_adapter
 from toolcore.base import ApprovalContext, ToolContext
 
+from apps.accounts.models import effective_role
 from apps.directory.adapters import DatabaseDirectory
 from apps.directory.vault import store_password
 
@@ -68,6 +70,7 @@ def build_context(
     actor_type: str = "human",
     actor_id: str | None = None,
     actor_role: str | None = None,
+    organization: Any = None,
     on_approval_required: Callable[[ApprovalContext], None] | None = None,
     password_sink: Callable[[str, str, bool], str] | None = None,
 ) -> ToolContext:
@@ -76,10 +79,15 @@ def build_context(
     The agent runs as its own actor with an explicit role rather than borrowing a
     user's, so the audit trail distinguishes "the agent did this" from "a person
     did this" — which is exactly the question an incident review asks.
+
+    ``organization`` only ever reaches the auditor. It is not a tool argument and
+    never appears in a prompt: the model cannot choose which tenant it is acting in.
     """
     return ToolContext(
         actor_id=actor_id if actor_id is not None else str(getattr(user, "pk", "") or ""),
-        actor_role=actor_role if actor_role is not None else (getattr(user, "role", "") or ""),
+        # ``effective_role`` is the role for the organisation being acted in, not
+        # the legacy field on the user.
+        actor_role=actor_role if actor_role is not None else (effective_role(user) or ""),
         actor_type=actor_type,
         adapters=adapters if adapters is not None else default_adapters(),
         approval_token=approval_token,
@@ -88,7 +96,7 @@ def build_context(
         transport=transport,
         killswitch=killswitch.get_state,
         policy_resolver=policy.resolve_policy,
-        auditor=record_invocation,
+        auditor=partial(record_invocation, organization=organization),
         on_approval_required=on_approval_required or (lambda _approval: None),
         # Generated passwords go into the vault; the model only ever sees a reference.
         password_sink=password_sink or store_password,

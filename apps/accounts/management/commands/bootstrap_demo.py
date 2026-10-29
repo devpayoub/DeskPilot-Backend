@@ -10,10 +10,13 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from apps.accounts.models import CustomUser, Role
 from apps.guardrails.models import ToolPolicy
 from apps.helpdesk.services import create_ticket
+from apps.organizations.models import Membership
+from apps.organizations.services import default_organization
 
 PASSWORD = "DeskPilot!2026"
 
@@ -68,6 +71,8 @@ class Command(BaseCommand):
             )
             raise SystemExit(1)
 
+        organization = default_organization()
+
         for email, display_name, role in USERS:
             user, created = CustomUser.objects.get_or_create(
                 email=email, defaults={"display_name": display_name, "role": role}
@@ -77,6 +82,23 @@ class Command(BaseCommand):
             user.set_password(PASSWORD)
             user.is_staff = role == Role.ADMIN
             user.save()
+
+            # The role the console gates on lives on the membership now; the field
+            # on the user is only the single-workspace fallback.
+            membership, _ = Membership.objects.get_or_create(
+                user=user,
+                organization=organization,
+                defaults={"role": role, "accepted_at": timezone.now()},
+            )
+            if membership.role != role:
+                membership.role = role
+                membership.save(update_fields=["role"])
+            if not Membership.objects.filter(
+                organization=organization, is_owner=True
+            ).exists():
+                membership.is_owner = True
+                membership.save(update_fields=["is_owner"])
+
             self.stdout.write(f"  {'created' if created else 'updated'} {email} ({role})")
 
         call_command("seed_tool_policies")
@@ -87,6 +109,30 @@ class Command(BaseCommand):
 
         # Give every registered tool a policy row so the console's tools page is populated.
         self.stdout.write(f"  tool policies: {ToolPolicy.objects.count()}")
+
+        # Two departments so the Settings → Departments screen has something real
+        # in it, and the desk user has somewhere to live.
+        from apps.organizations.services import create_department
+        from apps.organizations.services import TenancyError
+
+        departments = {}
+        for name, code in (("Service desk", "L1"), ("Field technicians", "FLD")):
+            try:
+                departments[code] = create_department(organization, name=name, code=code)
+            except TenancyError:
+                from apps.organizations.models import Department
+
+                departments[code] = Department.objects.get(
+                    organization=organization, name=name
+                )
+            self.stdout.write(f"  department: {name} ({code})")
+
+        desk_membership = Membership.objects.filter(
+            organization=organization, user__email="desk@deskpilot.test"
+        ).first()
+        if desk_membership is not None and desk_membership.department_id is None:
+            desk_membership.department = departments["L1"]
+            desk_membership.save(update_fields=["department"])
 
         from apps.helpdesk.models import Ticket
 
@@ -99,6 +145,7 @@ class Command(BaseCommand):
                 device_hostname=host,
                 requester_email=email,
                 requester_name=email.split("@")[0].replace(".", " ").title(),
+                organization=organization,
             )
             self.stdout.write(f"  ticket: {subject}")
 

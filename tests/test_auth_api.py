@@ -82,8 +82,13 @@ def test_me_requires_a_token(api_client):
     "role",
     [Role.ADMIN, Role.TECHNICIAN, Role.SERVICE_DESK, Role.REQUESTER],
 )
-def test_me_reports_the_real_role_inside_one_synthetic_workspace(api_client, role):
-    """The console's session model is organisation-shaped; DeskPilot is single-tenant."""
+def test_me_reports_the_real_role_from_a_real_membership(api_client, role):
+    """The console gates its entire UI on this.
+
+    The role used to be one global field reported inside a synthetic workspace.
+    It now comes from a membership row, which is what lets the same person hold a
+    different role in a different account.
+    """
     user = make_user(f"{role.lower()}@deskpilot.test", role)
     login = api_client.post(LOGIN, {"email": user.email, "password": PASSWORD}, format="json")
     token = login.json()["access"]
@@ -97,7 +102,9 @@ def test_me_reports_the_real_role_inside_one_synthetic_workspace(api_client, rol
 
     membership = body["memberships"][0]
     assert membership["role"] == role, "the console gates the UI on this"
-    assert membership["organization_id"] == "deskpilot"
+    assert membership["organization_slug"] == "deskpilot"
+    assert body["active_organization"]["organization_slug"] == "deskpilot"
+    assert membership["organization_id"], "the console keys the org switcher on this"
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ def create_ticket(
     device_hostname: str = "",
     priority: str = Ticket.Priority.P3,
     is_eval: bool = False,
+    organization=None,
 ) -> Ticket:
     ticket = Ticket.objects.create(
         subject=subject,
@@ -24,6 +25,7 @@ def create_ticket(
         device_hostname=device_hostname,
         priority=priority,
         is_eval=is_eval,
+        organization=organization,
     )
     TicketMessage.objects.create(
         ticket=ticket,

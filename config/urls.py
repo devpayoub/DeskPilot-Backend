@@ -20,6 +20,7 @@ urlpatterns = [
     path("api/v1/tools/<str:name>/invoke/", ToolInvokeView.as_view(), name="tool-invoke"),
     path("api/v1/", include("apps.agent.urls")),
     path("api/v1/directory/", include("apps.directory.urls")),
+    path("api/v1/org/", include("apps.organizations.urls")),
     path("api/v1/guardrails/", include("apps.guardrails.urls")),
     path("api/v1/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(

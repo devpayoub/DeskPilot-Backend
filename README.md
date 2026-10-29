@@ -2,7 +2,7 @@
 
 **An IT helpdesk agent that investigates real machines — and cannot change anything without a human saying so.**
 
-![tests](https://img.shields.io/badge/tests-224%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-282%20passing-brightgreen)
 ![tools](https://img.shields.io/badge/tool%20catalog-17-blue)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![django](https://img.shields.io/badge/django-5.1-0C4B33)
@@ -118,7 +118,15 @@ Stated here rather than left for a reviewer to discover:
 
 **The audit is unconditional.** Denials and approval requests are recorded, not just successes. The refusals *are* the safety evidence — the console puts "blocked actions" on the dashboard for exactly that reason.
 
-**A requester sees only their own tickets.** Visibility is enforced in the queryset, not in the UI: list, detail, run and trace endpoints all share one rule, so a requester cannot read another person's ticket — or its tool output — by guessing an id.
+**A requester sees only their own tickets.** Visibility is enforced in the queryset, not in the UI: list, detail, run and trace endpoints all share one rule, so a requester cannot read another person's ticket — or its tool output — by guessing an id. The same rule now carries an organisation filter, for the same reason: an id from another account resolves to a 404, not to someone else's data.
+
+**The role belongs to the membership, not the person.** `CustomUser.role` is a fallback for a deployment that never turned tenancy on; the authoritative value is `Membership.role`, which is why the same human can be an `ADMIN` of their own account and a `REQUESTER` in a customer's. Resolution happens in the authentication step rather than in middleware, because DRF authenticates *inside* the view — a middleware looking at `request.user` would see an anonymous user on every JWT request.
+
+**An account cannot be left without an administrator.** The last active `ADMIN` cannot be demoted or deactivated, and the owner cannot be deactivated at all. A platform superuser can still step in — see below — but that is an incident path, not a workflow, so the ordinary mistake is made impossible rather than merely recoverable.
+
+**There are two levels of administrator, and they are not the same thing.** A *company admin* is an `ADMIN` **of one organisation**: they can add its departments, add its people and set their passwords, and they cannot see or touch any other account. A *project admin* is a Django `is_superuser` — the operator of DeskPilot itself, who is deliberately **not** a member of any customer's account. They may name an account with `X-Organization` and act in it as an administrator; that is the only escape hatch when a client locks themselves out, it requires naming the tenant explicitly (there is no default), and `request.membership` stays `None` so nothing can mistake them for a real member. Every org-scoped queryset still applies, so the hatch opens one named account, not all of them.
+
+**Passwords, not invitation links.** An administrator adding a member sets a password, or lets the server generate one, and it is returned exactly once. The person signs in immediately with email and password. There is no mail transport in this project, so a link-based invitation would mean someone who cannot get in until they redeem a URL they were sent out-of-band — and no way back at all if they forget. `POST org/members/{id}/password/` is the recovery path, available to both levels of administrator.
 
 **The model never sees a credential.** `reset_password` returns a real password, so it goes through a `password_sink` into a vault and the model only ever receives a reference. A host that forgets to supply a sink fails closed.
 
@@ -257,6 +265,15 @@ All routes are under `/api/v1/`. Interactive docs at `/api/v1/docs/`.
 | `POST` | `guardrails/approvals/{id}/{approve\|reject}/` | technician+ | Decide one request |
 | `GET` | `evals/runs/` | any | Eval history with metrics |
 | `GET` | `directory/employees/`, `devices/` | any | The account tenant |
+| `GET` | `org/` | any member | The organisation you are acting in, and what you may do in it |
+| `GET`/`POST` | `org/departments/` | admin (write) | Operator departments: list, add |
+| `PATCH`/`DELETE` | `org/departments/{id}/` | admin | Rename, re-parent, archive, or delete (with `?reassign_to=`) |
+| `GET` | `org/members/` | service desk+ | The roster, filterable by `q`, `role`, `department_id` |
+| `POST` | `org/members/` | admin | Add a person with a password (given or generated), returned once |
+| `PATCH` | `org/members/{id}/` | admin | Change role, department, or active state |
+| `DELETE` | `org/members/{id}/` | admin | Deactivate (never delete — the history points at this user) |
+| `POST` | `org/members/{id}/password/` | admin | Set or reset one password; the account's only recovery path |
+| `POST` | `org/invites/accept/` | public | Optional: redeem an invitation token issued through the API |
 
 WebSocket: `ws://…/ws/runs/{id}/?token=…` where the token comes from `ws-ticket/`. It is not the session token — that lives in an httpOnly cookie and is deliberately never exposed to JavaScript.
 
@@ -296,8 +313,8 @@ Three modes:
 
 ```bash
 .venv/Scripts/python -m pytest
-# 224 passed, 19 skipped (LDAP contract tests skip without a container)
-# 243 passed with OpenLDAP running
+# 282 passed, 19 skipped (LDAP contract tests skip without a container)
+# 301 passed with OpenLDAP running
 ```
 
 | Suite | Covers |
@@ -311,6 +328,7 @@ Three modes:
 | `test_agent_trace.py` | socket auth, run-scoped tickets, step delivery |
 | `test_agent_api.py` | ticket CRUD, idempotent triggering, **requester visibility** |
 | `test_directory.py` + `test_ldap_contract.py` | **the same contract** against the fake tenant and real OpenLDAP |
+| `test_organizations.py` | departments, invitations, cross-tenant 404s, role-per-account, last-admin lockout |
 | `test_mcp_parity.py` | MCP schema and result parity with the internal registry |
 | `test_evals.py` | metric maths, gate logic, negative control |
 
@@ -327,6 +345,7 @@ DeskPilot/
 │   │   ├── agent/            bounded ReAct loop, runs, steps, trace socket
 │   │   ├── guardrails/       the chokepoint's Django side: policy, audit, approvals
 │   │   ├── helpdesk/         tickets and messages
+│   │   ├── organizations/    organisations, memberships (role per account), departments
 │   │   ├── directory/        fake tenant + LDAP behind one interface
 │   │   ├── llm/              provider-agnostic client, cost accounting, prompts
 │   │   └── evals/            golden-set runner, metrics, reporting
@@ -356,7 +375,14 @@ Stated plainly, because a README that hides these is not worth reading:
 3. **Per-ticket host routing is not wired.** `HostAgentDiagnostics` implements the same protocol as `LocalDiagnostics` and is tested, but `default_adapters()` still returns `LocalDiagnostics` — so the agent inspects the machine the *worker* runs on. Routing a ticket to its own PC needs an asset inventory (hostname → agent URL) that does not exist yet.
 4. **Writes are simulated by default**, as described above.
 5. **`run.iterations` stays `0` on a failed run.** The exception escapes the loop before its bookkeeping. The persisted step count is the honest measure of how many attempts happened.
-6. **Single tenant.** There is one workspace, no organisations, no per-customer isolation.
+6. **Multi-tenant, but not self-service.** The schema supports many organisations —
+   `Organization`, `Membership` (role *per account*) and `Department` — and tickets,
+   audit rows, approvals and the dashboard are all tenant-scoped. What is missing is
+   everything around it: no signup, no way for a person to join an account without an
+   administrator adding them, and no mail transport (passwords are handed over
+   directly rather than emailed). `directory.Employee` is still global: those are the
+   accounts the customer *supports*, not the people who work the desk, and they are
+   not tenant-scoped.
 7. **Tool targets are not scoped to the ticket.** See [the note above](#two-controls-that-are-modelled-but-not-enforced). Role and approval still apply; ticket-scoping does not.
 8. **`max_calls_per_run` is inert.** It is modelled and serialised but never read; `AgentLimits` is the real bound.
 

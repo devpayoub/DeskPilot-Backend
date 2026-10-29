@@ -128,6 +128,16 @@ class ToolInvocation(models.Model):
     trace_id = models.CharField(max_length=64, blank=True, db_index=True)
     transport = models.CharField(max_length=20, default="internal")
     dry_run = models.BooleanField(default=False)
+    # The account this attempt belongs to. Nullable because ``toolcore`` builds the
+    # record without any Django knowledge, so the organisation is attached at the
+    # persistence seam; rows written before tenancy existed have none.
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="tool_invocations",
+    )
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -135,6 +145,7 @@ class ToolInvocation(models.Model):
         indexes = [
             models.Index(fields=["tool_name", "-created_at"]),
             models.Index(fields=["outcome", "-created_at"]),
+            models.Index(fields=["organization", "-created_at"]),
         ]
 
     def __str__(self) -> str:

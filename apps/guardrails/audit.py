@@ -13,13 +13,21 @@ from .models import ToolInvocation
 _MAX_ERROR_CHARS = 2000
 
 
-def record_invocation(record: InvocationRecord) -> ToolInvocation:
+def record_invocation(record: InvocationRecord, *, organization=None) -> ToolInvocation:
+    """Persist one attempt.
+
+    ``organization`` is threaded in from the caller rather than read from the
+    record: ``toolcore`` is deliberately Django-free and knows nothing about
+    tenants. Without it, the audit trail would be installation-wide and one
+    customer would see another's tool calls.
+    """
     payload = record.args_redacted
     if not isinstance(payload, (dict, list)):
         # args were not an object; keep the row valid JSON rather than losing it
         payload = {"value": payload}
 
     return ToolInvocation.objects.create(
+        organization=organization,
         tool_name=record.tool_name[:120],
         risk_class=(record.risk_class or "UNKNOWN")[:20],
         actor_type=(record.actor_type or "agent")[:20],

@@ -1,0 +1,38 @@
+# This file lives inside backend/, so every pattern is relative to it.
+# The console in ../web has its own .gitignore.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Django
+*.log
+db.sqlite3
+media/
+staticfiles/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Eval artefacts that should not be committed as noise
+evals/reports/*.tmp

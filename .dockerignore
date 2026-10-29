@@ -1,0 +1,17 @@
+# The build context is this directory. Everything the image does not need at
+# build time is excluded, so a local virtualenv never ends up in a layer.
+.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+db.sqlite3
+.env
+.env.*
+!.env.example
+evals/cassettes/
+docs/
+node_modules/

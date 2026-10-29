@@ -1,0 +1,18 @@
+# Normalise line endings: LF in the repository and on checkout everywhere.
+# Without this, Windows clones rewrite every file and diffs become noise.
+* text=auto eol=lf
+
+# Windows scripts keep CRLF so cmd.exe and PowerShell behave.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary

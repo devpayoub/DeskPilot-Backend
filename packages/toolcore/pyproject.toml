@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "toolcore"
+version = "0.1.0"
+description = "Framework-free validated tool registry for DeskPilot"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "psutil>=5.9",
+    # The LDAP directory adapter is imported eagerly by adapters/__init__, so this
+    # is a hard dependency of the package rather than an optional extra.
+    "ldap3>=2.9,<3",
+]
+
+[tool.setuptools.packages.find]
+include = ["toolcore*"]

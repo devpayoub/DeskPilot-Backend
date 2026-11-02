@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from apps.accounts.models import Role
+from apps.organizations.models import Membership
 from tests.factories import PASSWORD, make_user
 
 pytestmark = pytest.mark.django_db
@@ -105,6 +106,32 @@ def test_me_reports_the_real_role_from_a_real_membership(api_client, role):
     assert membership["organization_slug"] == "deskpilot"
     assert body["active_organization"]["organization_slug"] == "deskpilot"
     assert membership["organization_id"], "the console keys the org switcher on this"
+
+
+def test_the_project_admin_belongs_to_no_account(api_client):
+    """A platform superuser is not a member of any customer account.
+
+    ``/auth/me/`` used to quietly provision a membership for them at sign-in,
+    which put the platform operator on a customer's member list and gave their
+    account a default tenant — breaking the documented escape hatch. Now they
+    belong to nobody, and the console is told so plainly.
+    """
+    operator = make_user(
+        "ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True
+    )
+
+    login = api_client.post(
+        LOGIN, {"email": operator.email, "password": PASSWORD}, format="json"
+    )
+    assert login.status_code == 200
+
+    response = api_client.get(ME, HTTP_AUTHORIZATION=f"Bearer {login.json()['access']}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["memberships"] == []
+    assert body["active_organization"] is None
+    assert not Membership.objects.filter(user=operator).exists()
 
 
 # ---------------------------------------------------------------------------

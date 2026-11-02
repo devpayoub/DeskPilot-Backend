@@ -14,7 +14,7 @@ from apps.accounts.models import Role
 from apps.helpdesk.services import create_ticket
 from apps.organizations.models import Department, Membership, Organization
 from apps.organizations.services import TenancyError, invite_member, update_member
-from tests.factories import make_user
+from tests.factories import PASSWORD, make_user
 
 pytestmark = pytest.mark.django_db
 
@@ -540,6 +540,193 @@ def test_a_user_with_no_membership_cannot_use_the_org_api():
     response = _client_for(user).get(ORG)
 
     assert response.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# The two levels of administrator
+#
+# A *company admin* is an ADMIN of one organisation — a real member, who belongs
+# to the account and must be visible on its roster. A *project admin* is a Django
+# ``is_superuser``: the operator of DeskPilot itself, who deliberately belongs to
+# no customer account and acts in one by naming it explicitly. These tests pin
+# that distinction down, because getting it wrong puts the platform operator on a
+# customer's member list.
+# ---------------------------------------------------------------------------
+
+
+def test_the_roster_shows_the_company_administrator(acme_client, acme_admin):
+    """The point of the page: the people who belong to *this* account."""
+    response = acme_client.get(MEMBERS)
+
+    assert response.status_code == 200
+    emails = [row["email"] for row in response.json()["results"]]
+    assert "owner@acme.test" in emails
+
+
+def test_the_roster_does_not_show_the_project_admin(acme_client, acme):
+    """The project admin operates DeskPilot; they do not belong to this account."""
+    operator = make_user("ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True)
+    # A membership row left behind by an old backfill must still be hidden.
+    _join(operator, acme, Role.ADMIN)
+
+    response = acme_client.get(MEMBERS)
+
+    assert response.status_code == 200
+    emails = [row["email"] for row in response.json()["results"]]
+    assert "ops@deskpilot.test" not in emails
+    assert "owner@acme.test" in emails, "the real administrator is still there"
+
+
+def test_a_staff_member_who_is_not_a_superuser_stays_on_the_roster(acme_client, acme):
+    """``is_staff`` is Django admin access, not the project-admin role.
+
+    A client administrator may well have staff access to the Django admin site.
+    Filtering on ``is_staff`` instead of ``is_superuser`` would hide exactly the
+    people this page exists to show.
+    """
+    staff = make_user("staff@acme.test", Role.ADMIN, is_staff=True, is_superuser=False)
+    _join(staff, acme, Role.ADMIN)
+
+    response = acme_client.get(MEMBERS)
+
+    emails = [row["email"] for row in response.json()["results"]]
+    assert "staff@acme.test" in emails
+
+
+def test_the_member_count_agrees_with_the_roster(acme_client, acme):
+    """The badge and the list must not disagree."""
+    operator = make_user("ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True)
+    _join(operator, acme, Role.ADMIN)
+    _join(make_user("tech@acme.test", Role.TECHNICIAN), acme, Role.TECHNICIAN)
+
+    roster = acme_client.get(MEMBERS).json()["results"]
+    detail = acme_client.get(ORG).json()
+
+    assert detail["member_count"] == len(roster)
+    # The owner from the fixture and the technician. The operator is not a
+    # member, so they are neither listed nor counted.
+    assert detail["member_count"] == 2
+    assert "ops@deskpilot.test" not in [row["email"] for row in roster]
+
+
+def test_the_department_member_count_agrees_too(acme_client, acme):
+    operator = make_user("ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True)
+    _join(operator, acme, Role.ADMIN)
+    department = Department.objects.create(organization=acme, name="Service desk")
+
+    body = acme_client.get(DEPARTMENTS).json()["results"]
+
+    assert body[0]["member_count"] == 0
+
+
+def test_the_project_admin_is_not_given_a_membership_on_login(acme, api_client):
+    """Logging in must not quietly make the operator a member of the account.
+
+    This was the bug: ``ensure_membership`` provisioned a membership at sign-in,
+    which put the platform admin on the member list *and* gave their account a
+    default tenant, so the documented escape hatch stopped working.
+    """
+    operator = make_user("ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True)
+
+    response = api_client.post(
+        "/api/v1/auth/login/",
+        {"email": "ops@deskpilot.test", "password": PASSWORD},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert not Membership.objects.filter(user=operator).exists()
+
+
+def test_the_escape_hatch_still_works_after_the_operator_logs_in(acme, globex, api_client):
+    """The point of the escape hatch: name the account and act in it."""
+    operator = make_user("ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True)
+
+    login = api_client.post(
+        "/api/v1/auth/login/",
+        {"email": "ops@deskpilot.test", "password": PASSWORD},
+        format="json",
+    )
+    assert login.status_code == 200
+    token = login.json()["access"]
+
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    body = client.get(ORG, HTTP_X_ORGANIZATION_ID=str(globex.pk)).json()
+
+    assert body["slug"] == "globex", "the explicit account must be honoured after sign-in"
+    assert body["my_role"] == Role.ADMIN
+
+
+def test_an_admin_cannot_add_the_project_admin_as_a_member(acme_client):
+    """The roster must stay clean even if somebody tries to dirty it by hand."""
+    make_user("ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True)
+
+    response = acme_client.post(
+        MEMBERS, {"email": "ops@deskpilot.test", "role": Role.ADMIN}, format="json"
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "platform_admin"
+
+
+def test_an_admin_cannot_invite_the_project_admin_as_a_member(acme):
+    """Same rule on the invitation path, which is a service rather than a route."""
+    make_user("ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True)
+
+    with pytest.raises(TenancyError) as refused:
+        invite_member(acme, email="ops@deskpilot.test", role=Role.ADMIN)
+
+    assert refused.value.code == "platform_admin"
+
+
+def test_a_superuser_row_does_not_count_as_the_second_administrator(
+    acme_client, acme_admin, acme
+):
+    """The "last administrator" guard must count real members only.
+
+    If an invisible platform admin counted, the only real administrator could be
+    demoted and the account would be left with nobody able to run it.
+    """
+    membership = Membership.objects.get(user=acme_admin)
+    operator = make_user("ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True)
+    _join(operator, acme, Role.ADMIN)
+
+    response = acme_client.patch(
+        f"{MEMBERS}{membership.pk}/", {"role": Role.TECHNICIAN}, format="json"
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "last_admin"
+
+
+def test_the_project_admin_cannot_reach_an_account_without_naming_it(acme):
+    """Unchanged from the original contract, and still enforced after sign-in."""
+    operator = make_user("ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True)
+
+    response = _client_for(operator).get(ORG)
+
+    assert response.status_code == 403
+
+
+def test_the_roster_of_the_named_account_is_still_complete_for_the_operator(acme, globex):
+    """Acting in an account is not the same as joining it.
+
+    The operator can read the roster of an account they named, and that roster
+    still lists the account's own people — the escape hatch is about authority,
+    not about rewriting who belongs where.
+    """
+    operator = make_user("ops@deskpilot.test", Role.ADMIN, is_superuser=True, is_staff=True)
+    _join(make_user("owner@acme.test", Role.ADMIN), acme, Role.ADMIN, is_owner=True)
+
+    client = _client_for(operator)
+    response = client.get(MEMBERS, HTTP_X_ORGANIZATION_ID=str(acme.pk))
+
+    assert response.status_code == 200
+    emails = [row["email"] for row in response.json()["results"]]
+    assert "owner@acme.test" in emails
+    assert "ops@deskpilot.test" not in emails
 
 
 # ---------------------------------------------------------------------------

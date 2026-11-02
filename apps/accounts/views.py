@@ -136,19 +136,24 @@ class MeView(APIView):
         memberships = list(
             request.user.memberships.select_related("organization", "department")
             .filter(is_active=True, organization__is_active=True)
+            .exclude(user__is_superuser=True)
             .order_by("created_at")
         )
         # Belt and braces: a user with no membership cannot render the console at
-        # all, and /auth/me/ is the first call it makes.
+        # all, and /auth/me/ is the first call it makes. A platform superuser is
+        # the exception — they belong to no account by design, so this stays empty
+        # and they are told so rather than being quietly given a tenant.
         if not memberships:
-            memberships = [ensure_membership(request.user)]
+            provisioned = ensure_membership(request.user)
+            if provisioned is not None:
+                memberships = [provisioned]
 
-        active = request.membership or memberships[0]
+        active = request.membership or (memberships[0] if memberships else None)
         return Response(
             {
                 "user": serialize_user(request.user),
                 "memberships": [serialize_membership(m) for m in memberships],
-                "active_organization": serialize_membership(active),
+                "active_organization": serialize_membership(active) if active else None,
             }
         )
 

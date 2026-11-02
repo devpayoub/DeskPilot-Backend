@@ -47,7 +47,7 @@ def _tenancy_error(exc: TenancyError) -> Response:
     """
     if exc.code in {"role_too_high", "last_admin", "cannot_disable_owner"}:
         status_code = status.HTTP_403_FORBIDDEN
-    elif exc.code in {"invalid_password", "weak_password", "invalid_email"}:
+    elif exc.code in {"invalid_password", "weak_password", "invalid_email", "platform_admin"}:
         status_code = status.HTTP_400_BAD_REQUEST
     else:
         status_code = status.HTTP_409_CONFLICT
@@ -90,8 +90,18 @@ def _departments(request):
 
 
 def _members(request):
-    return Membership.objects.filter(organization=request.organization).select_related(
-        "user", "department"
+    """The roster of this organisation — the people who belong to *it*.
+
+    Platform admins are excluded. A Django ``is_superuser`` is the operator of
+    DeskPilot itself, deliberately not a member of any customer's account, so
+    naming the account lets them *act* in it without putting them on its list.
+    The filter keys on ``is_superuser`` and never on ``is_staff``: a client
+    administrator may well have staff access to Django, and hiding those would
+    hide the people this page exists to show.
+    """
+    return (
+        Membership.objects.filter(organization=request.organization, user__is_superuser=False)
+        .select_related("user", "department")
     )
 
 
@@ -118,7 +128,11 @@ class OrganizationDetailView(APIView):
                     if membership is not None and membership.department_id
                     else None
                 ),
-                "member_count": organization.memberships.filter(is_active=True).count(),
+                # Counts must agree with the roster the console renders, so
+                # platform admins are excluded here too.
+                "member_count": organization.memberships.filter(
+                    is_active=True, user__is_superuser=False
+                ).count(),
                 "department_count": organization.departments.count(),
                 # What the console should show. Presentation only — the API
                 # re-checks every write regardless of what this says.
@@ -146,7 +160,12 @@ class DepartmentListCreateView(APIView):
 
     def get(self, request):
         queryset = _departments(request).annotate(
-            member_count=Count("members", filter=Q(members__is_active=True))
+            # Same roster rule as the members list — a platform admin is not a
+            # member of the account, so they are not in a department's count.
+            member_count=Count(
+                "members",
+                filter=Q(members__is_active=True, members__user__is_superuser=False),
+            )
         )
         needle = request.query_params.get("q", "").strip()
         if needle:

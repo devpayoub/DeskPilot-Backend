@@ -69,14 +69,24 @@ def default_organization() -> Organization:
     return organization
 
 
-def ensure_membership(user) -> Membership:
+def ensure_membership(user) -> Membership | None:
     """Give a user a membership, once, in the default organisation.
 
     Called at login and by ``/auth/me/``. Accounts that predate tenancy — and
     every account the test fixtures build — would otherwise be able to
     authenticate but belong nowhere, which the console renders as "not
     authorised" with no way out.
+
+    A **platform superuser** gets nothing. They are the operator of DeskPilot
+    itself, not a member of any customer's account, and the two-level
+    administrator model is built on that: a project admin acts in an account by
+    naming it explicitly, and never appears on its member list. Provisioning
+    one would put them on a customer's roster and silently make their account
+    the default tenant for every request they make.
     """
+    if getattr(user, "is_superuser", False):
+        return None
+
     existing = (
         user.memberships.select_related("organization")
         .filter(is_active=True, organization__is_active=True)
@@ -259,6 +269,10 @@ def _assert_not_last_admin(membership: Membership) -> None:
             organization=membership.organization, role=Role.ADMIN, is_active=True
         )
         .exclude(pk=membership.pk)
+        # A platform admin is not a member of the account, so they cannot be the
+        # administrator who keeps it reachable. Counting them would let a real
+        # last administrator be demoted, leaving the account with nobody.
+        .exclude(user__is_superuser=True)
         .count()
     )
     if others == 0:
@@ -291,6 +305,23 @@ def _validate_password(password: str, user) -> None:
         raise TenancyError("weak_password", " ".join(exc.messages)) from exc
 
 
+def _assert_not_platform_admin(email: str) -> None:
+    """Refuse to put the platform operator on a customer's roster.
+
+    A Django ``is_superuser`` is the operator of DeskPilot itself and is not a
+    member of any customer's account. Without this check an administrator could
+    type the operator's email into "add member" and create a membership for
+    them — putting the project admin straight back onto the member list the
+    roster filter works so hard to keep clean, and giving them a tenant to
+    default to.
+    """
+    if CustomUser.objects.filter(email=email, is_superuser=True).exists():
+        raise TenancyError(
+            "platform_admin",
+            "This is a DeskPilot platform administrator and cannot be a member of an account.",
+        )
+
+
 def create_member(
     organization: Organization,
     *,
@@ -315,6 +346,7 @@ def create_member(
     if "@" not in email or email.startswith("@") or email.endswith("@"):
         raise TenancyError("invalid_email", "A valid email address is required.")
     _assert_can_assign(actor_role, role)
+    _assert_not_platform_admin(email)
 
     if department is not None and department.organization_id != organization.pk:
         raise TenancyError(
@@ -419,6 +451,7 @@ def invite_member(
     if "@" not in email or email.startswith("@") or email.endswith("@"):
         raise TenancyError("invalid_email", "A valid email address is required.")
     _assert_can_assign(actor_role, role)
+    _assert_not_platform_admin(email)
 
     if department is not None and department.organization_id != organization.pk:
         raise TenancyError(

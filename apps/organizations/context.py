@@ -74,37 +74,46 @@ def resolve_tenant(request) -> Membership | None:
     if user is not None and user.is_authenticated:
         selector = _requested_organization(request)
 
-        candidates = (
-            Membership.objects.select_related("organization", "department")
-            .filter(
-                user=user,
-                is_active=True,
-                organization__is_active=True,
+        if getattr(user, "is_superuser", False):
+            # The platform operator is checked *first*, and never through a
+            # membership. They are the operator of DeskPilot itself, not a
+            # member of a customer's account — so a membership row left behind
+            # by an old backfill must not quietly make one customer's account
+            # their default tenant. The only way in is to name the account
+            # explicitly, and there is still no membership row: they act in
+            # the account, they are not on its roster.
+            if selector:
+                organization = _organization_by_selector(selector)
+                if organization is not None:
+                    # Enough for every permission class to let them through, and
+                    # it is scoped to this request by the same attribute the
+                    # membership path uses. There is no membership row, and
+                    # there is not meant to be.
+                    user.active_role = Role.ADMIN
+        else:
+            candidates = (
+                Membership.objects.select_related("organization", "department")
+                .filter(
+                    user=user,
+                    is_active=True,
+                    organization__is_active=True,
+                )
+                .order_by("created_at")
             )
-            .order_by("created_at")
-        )
 
-        if selector:
-            if selector.isdigit():
-                membership = candidates.filter(organization_id=int(selector)).first()
-            else:
-                membership = candidates.filter(organization__slug=selector).first()
-        if membership is None:
-            membership = candidates.first()
+            if selector:
+                if selector.isdigit():
+                    membership = candidates.filter(organization_id=int(selector)).first()
+                else:
+                    membership = candidates.filter(organization__slug=selector).first()
+            if membership is None:
+                membership = candidates.first()
 
-        if membership is not None:
-            # Read by ``accounts.models.effective_role``, which the permission
-            # classes use. Never persisted — it is the role for this request only.
-            user.active_role = membership.role
-            organization = membership.organization
-
-        elif selector and getattr(user, "is_superuser", False):
-            organization = _organization_by_selector(selector)
-            if organization is not None:
-                # Enough for every permission class to let them through, and it is
-                # scoped to this request by the same attribute the membership path
-                # uses. There is no membership row, and there is not meant to be.
-                user.active_role = Role.ADMIN
+            if membership is not None:
+                # Read by ``accounts.models.effective_role``, which the permission
+                # classes use. Never persisted — it is the role for this request only.
+                user.active_role = membership.role
+                organization = membership.organization
 
     setattr(request, _MEMBERSHIP_ATTR, membership)
     request.membership = membership

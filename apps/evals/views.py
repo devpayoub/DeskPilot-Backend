@@ -5,12 +5,13 @@ backend can do once, correctly.
 """
 from __future__ import annotations
 
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.agent.models import AgentRun
+from apps.common.capabilities import Capability
 from apps.common.pagination import DefaultPagination
+from apps.common.permissions import HasCapability
 from apps.guardrails.models import ApprovalRequest, ToolInvocation
 from apps.helpdesk.models import Ticket
 
@@ -27,7 +28,8 @@ def _percentile(values: list[float], fraction: float) -> float | None:
 class StatsView(APIView):
     """The numbers on the dashboard cards."""
 
-    permission_classes = [IsAuthenticated]
+    capability = Capability.USAGE_READ
+    permission_classes = [HasCapability]
 
     def get(self, request):
         # Every KPI is scoped to the organisation the caller is acting in. A
@@ -82,7 +84,8 @@ class StatsView(APIView):
 class EvalRunListView(APIView):
     """Recent eval runs, for the eval dashboard."""
 
-    permission_classes = [IsAuthenticated]
+    capability = Capability.EVAL_READ
+    permission_classes = [HasCapability]
 
     def get(self, request):
         paginator = DefaultPagination()

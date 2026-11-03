@@ -17,10 +17,12 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.accounts.models import ROLE_RANK, Role, effective_role
+from apps.accounts.models import Role, effective_role
+from apps.common.capabilities import Capability, role_has_capability
+from apps.common.permissions import HasCapability
 
 from .models import Department, Membership
-from .permissions import HasOrganization, IsOrganizationAdmin
+from .permissions import HasOrganization
 from .services import (
     TenancyError,
     accept_invite,
@@ -108,7 +110,8 @@ def _members(request):
 class OrganizationDetailView(APIView):
     """The account the caller is acting in, and what they may do in it."""
 
-    permission_classes = [HasOrganization]
+    permission_classes = [HasOrganization, HasCapability]
+    capability = Capability.ORG_READ
 
     def get(self, request):
         organization = request.organization
@@ -134,12 +137,14 @@ class OrganizationDetailView(APIView):
                     is_active=True, user__is_superuser=False
                 ).count(),
                 "department_count": organization.departments.count(),
-                # What the console should show. Presentation only — the API
-                # re-checks every write regardless of what this says.
+                # What the console should show. Derived from the same map the
+                # permission classes enforce, so a flag here can no longer disagree
+                # with the API behind it — which is exactly how the old hand-written
+                # `role == Role.ADMIN` checks drifted from what the views required.
                 "permissions": {
-                    "manage_departments": role == Role.ADMIN,
-                    "manage_members": role == Role.ADMIN,
-                    "view_members": ROLE_RANK.get(role, -1) >= ROLE_RANK[Role.SERVICE_DESK],
+                    "manage_departments": role_has_capability(role, Capability.DEPARTMENT_MANAGE),
+                    "manage_members": role_has_capability(role, Capability.MEMBER_MANAGE),
+                    "view_members": role_has_capability(role, Capability.MEMBER_READ),
                 },
             }
         )
@@ -151,12 +156,16 @@ class DepartmentListCreateView(APIView):
     Only an administrator of this organisation may create one. That is the
     permission the whole feature exists for: a client admin adding departments
     to their own account, without a platform operator in the loop.
+
+    Listing is everyone's — a requester should be able to see the shape of the
+    account they belong to.
     """
 
-    def get_permissions(self):
-        if self.request.method == "POST":
-            return [IsOrganizationAdmin()]
-        return [HasOrganization()]
+    permission_classes = [HasOrganization, HasCapability]
+    capabilities = {
+        "get": Capability.ORG_READ,
+        "post": Capability.DEPARTMENT_MANAGE,
+    }
 
     def get(self, request):
         queryset = _departments(request).annotate(
@@ -199,7 +208,8 @@ class DepartmentListCreateView(APIView):
 
 
 class DepartmentDetailView(APIView):
-    permission_classes = [IsOrganizationAdmin]
+    permission_classes = [HasOrganization, HasCapability]
+    capability = Capability.DEPARTMENT_MANAGE
 
     def get_object(self, request, pk) -> Department:
         return get_object_or_404(_departments(request), pk=pk)
@@ -247,14 +257,19 @@ class DepartmentDetailView(APIView):
 
 
 class MemberListCreateView(APIView):
-    """The roster, and the invitation that adds to it."""
+    """The roster, and the new member added to it.
 
-    def get_permissions(self):
-        if self.request.method == "POST":
-            return [IsOrganizationAdmin()]
-        from .permissions import IsOrganizationManager
+    The split is the answer to "can everyone add people?" — no. Reading who works in
+    the account starts at the service desk, because triage needs to know whose ticket
+    is whose. Adding, editing, removing and resetting passwords is
+    ``member:manage``, and only an administrator of *this* account holds it.
+    """
 
-        return [IsOrganizationManager()]
+    permission_classes = [HasOrganization, HasCapability]
+    capabilities = {
+        "get": Capability.MEMBER_READ,
+        "post": Capability.MEMBER_MANAGE,
+    }
 
     def get(self, request):
         queryset = _members(request)
@@ -300,7 +315,8 @@ class MemberListCreateView(APIView):
 
 
 class MemberDetailView(APIView):
-    permission_classes = [IsOrganizationAdmin]
+    permission_classes = [HasOrganization, HasCapability]
+    capability = Capability.MEMBER_MANAGE
 
     def get_object(self, request, pk) -> Membership:
         return get_object_or_404(_members(request), pk=pk)
@@ -359,7 +375,8 @@ class MemberPasswordView(APIView):
     cannot be read back later; resetting again is the way to recover it.
     """
 
-    permission_classes = [IsOrganizationAdmin]
+    permission_classes = [HasOrganization, HasCapability]
+    capability = Capability.MEMBER_MANAGE
 
     def post(self, request, pk):
         membership = get_object_or_404(_members(request), pk=pk)

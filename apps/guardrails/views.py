@@ -6,12 +6,14 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.models import effective_role
+from apps.common.capabilities import Capability
 from apps.common.pagination import DefaultPagination
-from apps.common.permissions import IsAdmin, IsServiceDeskOrAbove
+from apps.common.permissions import HasCapability
 from toolcore import registry
 from toolcore.base import KillSwitchState
 from toolcore.errors import (
@@ -52,7 +54,8 @@ def health(request):
 class ToolListView(APIView):
     """The tool catalog, as the agent and the MCP server see it."""
 
-    permission_classes = [IsAuthenticated]
+    capability = Capability.TOOL_READ
+    permission_classes = [HasCapability]
 
     def get(self, request):
         return Response({"count": registry.count(), "tools": registry.list_specs()})
@@ -65,7 +68,11 @@ class ToolInvokeView(APIView):
     row, because the chokepoint audits in a finally block.
     """
 
-    permission_classes = [IsServiceDeskOrAbove]
+    # Every guardrail still applies inside `execute_tool`; this only decides who may
+    # reach the chokepoint at all. The desk reads the queue and triages, the
+    # technician acts.
+    capability = Capability.TOOL_INVOKE
+    permission_classes = [HasCapability]
 
     def post(self, request, name):
         body = request.data if isinstance(request.data, dict) else {}
@@ -97,7 +104,8 @@ class ToolInvokeView(APIView):
 
 
 class ToolPolicyListView(APIView):
-    permission_classes = [IsAdmin]
+    capability = Capability.POLICY_WRITE
+    permission_classes = [HasCapability]
 
     def get(self, request):
         return Response(ToolPolicySerializer(ToolPolicy.objects.all(), many=True).data)
@@ -106,7 +114,8 @@ class ToolPolicyListView(APIView):
 class ToolPolicyDetailView(APIView):
     """Edit one tool's policy. Invalidates the cache so the change takes effect now."""
 
-    permission_classes = [IsAdmin]
+    capability = Capability.POLICY_WRITE
+    permission_classes = [HasCapability]
 
     def patch(self, request, tool_name):
         # A tool registered after the last seed must still be editable. Requiring a
@@ -127,7 +136,15 @@ class ToolPolicyDetailView(APIView):
 
 
 class KillSwitchView(APIView):
-    permission_classes = [IsAdmin]
+    # Reading the state and changing it are different powers. The state is an
+    # operator-facing fact the console shows on Settings; refusing it made the page
+    # render a fabricated "open" for anyone who could not fetch it, which is the
+    # worst possible thing a safety switch's UI can do. Flipping it stays admin-only.
+    capabilities = {
+        "get": Capability.USAGE_READ,
+        "post": Capability.KILL_SWITCH_WRITE,
+    }
+    permission_classes = [HasCapability]
 
     def get(self, request):
         return Response({"state": killswitch.get_state().value})
@@ -149,7 +166,8 @@ class KillSwitchView(APIView):
 class ToolInvocationListView(APIView):
     """The audit trail, including denied attempts."""
 
-    permission_classes = [IsServiceDeskOrAbove]
+    capability = Capability.AUDIT_READ
+    permission_classes = [HasCapability]
 
     def get(self, request):
         queryset = ToolInvocation.objects.all()
@@ -170,7 +188,8 @@ class ToolInvocationListView(APIView):
 class ApprovalListView(APIView):
     """Pending approvals by default; pass ?status= to see decided ones."""
 
-    permission_classes = [IsServiceDeskOrAbove]
+    capability = Capability.APPROVAL_READ
+    permission_classes = [HasCapability]
 
     def get(self, request):
         approvals.expire_stale()
@@ -195,7 +214,8 @@ class ApprovalDecisionView(APIView):
     write whose approval row is not yet visible.
     """
 
-    permission_classes = [IsServiceDeskOrAbove]
+    capability = Capability.APPROVAL_DECIDE
+    permission_classes = [HasCapability]
 
     def post(self, request, pk, decision):
         if decision not in {"approve", "reject"}:
@@ -203,7 +223,16 @@ class ApprovalDecisionView(APIView):
                 "invalid_decision", "decision must be 'approve' or 'reject'.", status.HTTP_400_BAD_REQUEST
             )
 
-        record = get_object_or_404(ApprovalRequest, pk=pk)
+        # Scoped by the account the caller is acting in, exactly like the list above
+        # it. `pk` is a sequential integer, so an unscoped lookup let a technician in
+        # one account approve a write queued in another — a 404 is the right answer
+        # to a guessable id that is not yours.
+        queryset = ApprovalRequest.objects.select_related("run__ticket")
+        organization = getattr(request, "organization", None)
+        if organization is not None:
+            queryset = queryset.filter(run__ticket__organization=organization)
+
+        record = get_object_or_404(queryset, pk=pk)
         payload = ApprovalDecisionSerializer(data=request.data or {})
         payload.is_valid(raise_exception=True)
         note = payload.validated_data.get("note", "")
@@ -212,10 +241,15 @@ class ApprovalDecisionView(APIView):
         # role must satisfy the tool's own allowlist.
         tool = registry.try_get_tool(record.tool_name)
         if tool is not None and tool.allowed_roles is not None:
-            if request.user.role not in tool.allowed_roles:
+            # The role *in this organisation*. `request.user.role` is the legacy
+            # field: one person who is a requester in one account and a technician
+            # in another would have been authorised on whichever was stamped on their
+            # user row, regardless of the account they were acting in.
+            actor_role = effective_role(request.user)
+            if actor_role not in tool.allowed_roles:
                 return _error(
                     "forbidden",
-                    f"Role '{request.user.role}' may not decide on '{record.tool_name}'.",
+                    f"Role '{actor_role}' may not decide on '{record.tool_name}'.",
                     status.HTTP_403_FORBIDDEN,
                 )
 

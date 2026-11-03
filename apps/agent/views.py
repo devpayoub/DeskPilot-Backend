@@ -6,13 +6,13 @@ import logging
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.models import Role, effective_role
+from apps.common.capabilities import Capability
 from apps.common.pagination import DefaultPagination
-from apps.common.permissions import IsServiceDeskOrAbove
+from apps.common.permissions import HasCapability
 from apps.helpdesk.models import Ticket
 from apps.helpdesk.services import create_ticket
 
@@ -70,7 +70,16 @@ def _runs_for(request):
 
 
 class TicketListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    # Reading the queue is ``ticket:read``, which every role holds — a requester sees
+    # only what they raised, and that filter lives in ``_tickets_for``.
+    #
+    # There is no ``ticket:write`` capability, deliberately. A requester raising
+    # their own ticket is this product's front door, so creation cannot be gated on a
+    # power they do not hold. What the POST below does instead is refuse to believe
+    # the body about *whose* ticket this is: below the service desk the requester is
+    # forced to the caller, so the person who files it is the person it belongs to.
+    capability = Capability.TICKET_READ
+    permission_classes = [HasCapability]
 
     def get(self, request):
         queryset = _tickets_for(request)
@@ -88,8 +97,10 @@ class TicketListCreateView(APIView):
         # guard correctly does not fire on the desk user.
         if effective_role(request.user) == Role.REQUESTER:
             data["requester"] = request.user
-            if not data.get("requester_email"):
-                data["requester_email"] = request.user.email
+            # Forced, not defaulted. Without this a requester could POST any address
+            # as `requester_email` and have the queue show a ticket as someone else's,
+            # which is the "raise on behalf of" power they do not hold.
+            data["requester_email"] = request.user.email
             if not data.get("requester_name"):
                 data["requester_name"] = (
                     request.user.display_name or request.user.email
@@ -106,7 +117,8 @@ class TicketListCreateView(APIView):
 
 
 class TicketDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    capability = Capability.TICKET_READ
+    permission_classes = [HasCapability]
 
     def get(self, request, pk):
         ticket = get_object_or_404(_tickets_for(request), pk=pk)
@@ -120,7 +132,8 @@ class TicketRunView(APIView):
     not been committed yet.
     """
 
-    permission_classes = [IsServiceDeskOrAbove]
+    capability = Capability.RUN_TRIGGER
+    permission_classes = [HasCapability]
 
     def post(self, request, pk):
         ticket = get_object_or_404(_tickets_for(request), pk=pk)
@@ -146,7 +159,8 @@ class RunListView(APIView):
     an operator: what is happening right now.
     """
 
-    permission_classes = [IsAuthenticated]
+    capability = Capability.TICKET_READ
+    permission_classes = [HasCapability]
 
     def get(self, request):
         wanted = request.query_params.get("status", "active")
@@ -181,7 +195,8 @@ class RunListView(APIView):
 
 
 class RunDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    capability = Capability.TICKET_READ
+    permission_classes = [HasCapability]
 
     def get(self, request, pk):
         run = get_object_or_404(_runs_for(request).prefetch_related("steps"), pk=pk)
@@ -189,7 +204,8 @@ class RunDetailView(APIView):
 
 
 class RunStepsView(APIView):
-    permission_classes = [IsAuthenticated]
+    capability = Capability.TICKET_READ
+    permission_classes = [HasCapability]
 
     def get(self, request, pk):
         run = get_object_or_404(_runs_for(request), pk=pk)
@@ -205,7 +221,8 @@ class RunWsTicketView(APIView):
     valid for 60 seconds against this single run and nothing else.
     """
 
-    permission_classes = [IsAuthenticated]
+    capability = Capability.TICKET_READ
+    permission_classes = [HasCapability]
 
     def post(self, request, pk):
         run = get_object_or_404(_runs_for(request), pk=pk)

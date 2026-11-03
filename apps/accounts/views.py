@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.common.capabilities import ROLE_CAPABILITIES
 from apps.organizations.services import ensure_membership
 
 from .models import CustomUser
@@ -154,6 +155,14 @@ class MeView(APIView):
                 "user": serialize_user(request.user),
                 "memberships": [serialize_membership(m) for m in memberships],
                 "active_organization": serialize_membership(active) if active else None,
+                # The role → capability map, served rather than duplicated. The
+                # console used to keep its own table, and the two drifted — an
+                # endpoint the table called administrator-only was open to anyone
+                # signed in. Now the client renders what this server enforces; a
+                # role it does not find here grants nothing.
+                "role_capabilities": {
+                    role: capabilities for role, capabilities in ROLE_CAPABILITIES.items()
+                },
             }
         )
 

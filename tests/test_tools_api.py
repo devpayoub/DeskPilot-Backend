@@ -41,8 +41,25 @@ def test_requester_may_not_invoke_tools(requester_client, api_fake_adapters):
     assert ToolInvocation.objects.count() == 0, "rejected before the chokepoint runs"
 
 
-def test_service_desk_can_invoke_a_read_tool(desk_client, api_fake_adapters):
+def test_service_desk_may_not_invoke_even_a_read_tool(desk_client, api_fake_adapters):
+    """Triage is not action: reading the queue does not make you allowed to touch it.
+
+    The old version of this test asserted the opposite — that a service desk account
+    could invoke a read tool. Tightening it to the documented ladder is deliberate:
+    `tool:invoke` starts at the technician.
+    """
     response = desk_client.post(INVOKE.format(name="get_disk_health"), {"args": {}}, format="json")
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "permission_denied"
+    assert "tool:invoke" in response.json()["error"]["message"]
+    assert ToolInvocation.objects.count() == 0, "refused before the chokepoint ran"
+
+
+def test_technician_can_invoke_a_read_tool(technician_client, api_fake_adapters):
+    response = technician_client.post(
+        INVOKE.format(name="get_disk_health"), {"args": {}}, format="json"
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -51,15 +68,15 @@ def test_service_desk_can_invoke_a_read_tool(desk_client, api_fake_adapters):
     assert body["trace_id"]
 
 
-def test_unknown_tool_returns_404(desk_client, api_fake_adapters):
-    response = desk_client.post(INVOKE.format(name="ghost_tool"), {"args": {}}, format="json")
+def test_unknown_tool_returns_404(technician_client, api_fake_adapters):
+    response = technician_client.post(INVOKE.format(name="ghost_tool"), {"args": {}}, format="json")
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "tool_not_found"
 
 
-def test_bad_arguments_return_400(desk_client, api_fake_adapters):
-    response = desk_client.post(
+def test_bad_arguments_return_400(technician_client, api_fake_adapters):
+    response = technician_client.post(
         INVOKE.format(name="list_services"), {"args": {"state": "exploded"}}, format="json"
     )
 
@@ -67,16 +84,18 @@ def test_bad_arguments_return_400(desk_client, api_fake_adapters):
     assert response.json()["error"]["code"] == "invalid_arguments"
 
 
-def test_non_object_args_return_400(desk_client, api_fake_adapters):
-    response = desk_client.post(
+def test_non_object_args_return_400(technician_client, api_fake_adapters):
+    response = technician_client.post(
         INVOKE.format(name="get_disk_health"), {"args": ["nope"]}, format="json"
     )
 
     assert response.status_code == 400
 
 
-def test_audit_endpoint_reads_back_the_invocation(desk_client, api_fake_adapters):
-    desk_client.post(INVOKE.format(name="get_disk_health"), {"args": {}}, format="json")
+def test_audit_endpoint_reads_back_the_invocation(technician_client, desk_client, api_fake_adapters):
+    # Invoked by the role that can act, read by the role that can only read the
+    # trail — which is the point of the split.
+    technician_client.post(INVOKE.format(name="get_disk_health"), {"args": {}}, format="json")
 
     response = desk_client.get("/api/v1/guardrails/invocations/")
 
@@ -95,14 +114,18 @@ def test_kill_switch_requires_admin(desk_client):
     assert response.status_code == 403
 
 
-def test_admin_halts_and_invocations_are_then_denied(admin_client, desk_client, api_fake_adapters):
+def test_admin_halts_and_invocations_are_then_denied(
+    admin_client, technician_client, api_fake_adapters
+):
     halt = admin_client.post(
         "/api/v1/guardrails/killswitch/", {"state": "halted"}, format="json"
     )
     assert halt.status_code == 200
     assert halt.json()["state"] == "halted"
 
-    denied = desk_client.post(INVOKE.format(name="get_disk_health"), {"args": {}}, format="json")
+    denied = technician_client.post(
+        INVOKE.format(name="get_disk_health"), {"args": {}}, format="json"
+    )
     assert denied.status_code == 403
     assert denied.json()["error"]["code"] == "denied"
 

@@ -4,12 +4,12 @@ import logging
 
 from django.http import Http404
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.capabilities import Capability
 from apps.common.pagination import DefaultPagination
-from apps.common.permissions import IsServiceDeskOrAbove, IsTechnicianOrAbove
+from apps.common.permissions import HasCapability
 
 from .adapters import DatabaseDirectory
 from .crypto import VaultDecryptionError
@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 class EmployeeListView(APIView):
     """The directory, for the console's picker. Read-only."""
 
-    permission_classes = [IsAuthenticated]
+    capability = Capability.DIRECTORY_READ
+    permission_classes = [HasCapability]
 
     def get(self, request):
         needle = request.query_params.get("q", "").strip()
@@ -49,7 +50,8 @@ class EmployeeListView(APIView):
 
 
 class EmployeeDetailView(APIView):
-    permission_classes = [IsServiceDeskOrAbove]
+    capability = Capability.DIRECTORY_READ
+    permission_classes = [HasCapability]
 
     def get(self, request, sam):
         found = DatabaseDirectory().lookup_user(sam)
@@ -59,7 +61,8 @@ class EmployeeDetailView(APIView):
 
 
 class DeviceListView(APIView):
-    permission_classes = [IsAuthenticated]
+    capability = Capability.DIRECTORY_READ
+    permission_classes = [HasCapability]
 
     def get(self, request):
         paginator = DefaultPagination()
@@ -86,7 +89,8 @@ class PasswordResetRetrievalView(APIView):
     reference, and this endpoint is the only way to turn it into a secret.
     """
 
-    permission_classes = [IsTechnicianOrAbove]
+    capability = Capability.DIRECTORY_READ
+    permission_classes = [HasCapability]
 
     def get(self, request, reference):
         try:

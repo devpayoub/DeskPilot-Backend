@@ -85,13 +85,13 @@ def test_requester_may_not_trigger_the_agent(requester_client, ticket):
 
 @override_settings(LLM_API_KEY="")
 def test_triggering_a_run_queues_it_and_fails_cleanly_without_an_api_key(
-    desk_client, ticket, inline_celery, django_capture_on_commit_callbacks
+    technician_client, ticket, inline_celery, django_capture_on_commit_callbacks
 ):
     # The key is overridden rather than assumed absent: a test that only passes on
     # a machine without credentials silently starts calling a paid API the moment
     # someone configures one — which is exactly what happened here.
     with django_capture_on_commit_callbacks(execute=True):
-        response = desk_client.post(f"/api/v1/tickets/{ticket.pk}/run/", {}, format="json")
+        response = technician_client.post(f"/api/v1/tickets/{ticket.pk}/run/", {}, format="json")
 
     assert response.status_code == 202
     run = AgentRun.objects.get(pk=response.json()["id"])
@@ -106,13 +106,13 @@ def test_triggering_a_run_queues_it_and_fails_cleanly_without_an_api_key(
 
 
 def test_client_request_id_makes_triggering_idempotent(
-    desk_client, ticket, inline_celery, django_capture_on_commit_callbacks
+    technician_client, ticket, inline_celery, django_capture_on_commit_callbacks
 ):
     payload = {"client_request_id": "req-abc-123"}
 
     with django_capture_on_commit_callbacks(execute=True):
-        first = desk_client.post(f"/api/v1/tickets/{ticket.pk}/run/", payload, format="json")
-        second = desk_client.post(f"/api/v1/tickets/{ticket.pk}/run/", payload, format="json")
+        first = technician_client.post(f"/api/v1/tickets/{ticket.pk}/run/", payload, format="json")
+        second = technician_client.post(f"/api/v1/tickets/{ticket.pk}/run/", payload, format="json")
 
     assert first.status_code == 202
     assert first.json()["id"] == second.json()["id"]

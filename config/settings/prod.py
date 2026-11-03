@@ -62,6 +62,27 @@ if not LLM_BASE_URL.startswith("https://"):  # noqa: F405
         f"LLM_BASE_URL must be https:// in production, got {LLM_BASE_URL!r}."
     )
 
+# Self-service sign-up sends a code nobody can read any other way. With the base
+# defaults this points at localhost:25 with no credentials, so every registration
+# would fail — or, on a host that happens to run an open relay, mail codes to
+# strangers. Either is worse than not booting.
+if EMAIL_BACKEND == "django.core.mail.backends.console.EmailBackend":  # noqa: F405
+    raise RuntimeError("EMAIL_BACKEND must not print sign-up codes to the server log.")
+if EMAIL_HOST == "localhost" or not (EMAIL_HOST_USER and EMAIL_HOST_PASSWORD):  # noqa: F405
+    raise RuntimeError(
+        "Set EMAIL_HOST, EMAIL_HOST_USER and EMAIL_HOST_PASSWORD. A registration "
+        "code that cannot be delivered is a signup page that looks like it works."
+    )
+
+# A reset link is the only thing standing between "forgot password" and a locked
+# out customer, and it is built from this value rather than from the request — the
+# API is on its own origin, so a guessed URL points at a port nothing serves. It
+# also carries a live token, so it must not travel in plaintext.
+if not CONSOLE_BASE_URL.startswith("https://"):  # noqa: F405
+    raise RuntimeError(
+        f"CONSOLE_BASE_URL must be the public https:// origin of the console, got {CONSOLE_BASE_URL!r}."
+    )
+
 if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:  # noqa: F405
     raise RuntimeError("DJANGO_ALLOWED_HOSTS must list concrete hosts, not '*'.")
 

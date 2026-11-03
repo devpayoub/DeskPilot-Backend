@@ -44,6 +44,16 @@ PUBLIC_ENDPOINTS = {
     "token-obtain",
     "token-refresh",
     "invite-accept",
+    # The three sign-up steps. They cannot declare a capability — there is no role
+    # to check before an account exists — so they are public by name and guarded by
+    # throttles plus the anti-enumeration rules in ``apps/accounts/registration.py``.
+    "register-code-issue",
+    "register-code-verify",
+    "register",
+    # Password reset, same argument: the caller has no session yet, and the only
+    # thing that authorises the last step is the token in the emailed link.
+    "forgot-password",
+    "reset-password",
     "schema",
     "docs",
     # The generated API reference. Renders the schema; every endpoint inside it

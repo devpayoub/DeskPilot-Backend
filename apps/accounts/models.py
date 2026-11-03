@@ -6,6 +6,8 @@ IT support hierarchy (L1 desk < L2 technician < admin), not alphabetical.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 from django.utils import timezone
@@ -97,3 +99,98 @@ def effective_role(user) -> str:
     if user is None:
         return ""
     return getattr(user, "active_role", None) or getattr(user, "role", "") or ""
+
+
+# ---------------------------------------------------------------------------
+# Self-service sign-up
+# ---------------------------------------------------------------------------
+
+CODE_LIFETIME = timedelta(minutes=10)
+VERIFICATION_LIFETIME = timedelta(minutes=15)
+# A six-digit code gets five guesses, then the row is dead and a new code has to
+# be requested. Without a cap the endpoint is a lottery: 10^6 combinations at the
+# default anonymous throttle is a few hours of work.
+MAX_CODE_ATTEMPTS = 5
+
+
+class RegistrationCode(models.Model):
+    """One address waiting to prove it receives mail, during sign-up.
+
+    The code is stored with Django's **password** hashers, not a plain digest. A
+    bare SHA-256 of a six-digit number is reversed offline by trying a million
+    inputs, so a leaked row would be a leaked code — the same column on an invite
+    token is safe only because that token carries 256 bits of entropy. This one
+    carries twenty.
+
+    Row lifetime is short and the table is expected to stay small; expired rows
+    are deleted when a new code is issued rather than by a scheduled job.
+    """
+
+    email = models.EmailField(db_index=True)
+    code_hash = models.CharField(max_length=255)
+    # Issued when the code is correct and spent at the final step, so the password
+    # and the company name are submitted without sending the code a second time.
+    # High-entropy, so a digest is enough here.
+    verification_hash = models.CharField(max_length=64, blank=True, db_index=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"sign-up code for {self.email}"
+
+    @property
+    def is_live(self) -> bool:
+        return (
+            self.consumed_at is None
+            and self.expires_at > timezone.now()
+            and self.attempts < MAX_CODE_ATTEMPTS
+        )
+
+    @property
+    def verification_is_live(self) -> bool:
+        return bool(self.verification_hash) and self.consumed_at is None
+
+
+# ---------------------------------------------------------------------------
+# Password reset
+# ---------------------------------------------------------------------------
+
+RESET_LIFETIME = timedelta(minutes=30)
+
+
+class PasswordResetToken(models.Model):
+    """One emailed link that lets a person take back their own account.
+
+    The link carries ``secrets.token_urlsafe(32)`` — 256 bits — so a SHA-256
+    digest is the right thing to store, unlike the six-digit sign-up code above,
+    where the input itself is guessable and only a password hasher helps. A leaked
+    table therefore leaks no working link.
+
+    Rows outlive the session they were used to end: a reset is a security event
+    and the audit question ("when did this address ask for one?") is answered by
+    the rows that were spent, so ``consumed_at`` is a stamp rather than a delete.
+    """
+
+    user = models.ForeignKey(
+        CustomUser, on_delete=models.CASCADE, related_name="password_reset_tokens"
+    )
+    token_hash = models.CharField(max_length=64, db_index=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["user", "-created_at"])]
+
+    def __str__(self) -> str:
+        return f"password reset for {self.user_id}"
+
+    @property
+    def is_live(self) -> bool:
+        return self.consumed_at is None and self.expires_at > timezone.now()

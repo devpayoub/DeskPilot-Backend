@@ -22,6 +22,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
+from django.utils.text import slugify
 
 from apps.accounts.models import ROLE_RANK, CustomUser, Role
 
@@ -110,6 +111,49 @@ def ensure_membership(user) -> Membership | None:
             },
         )
     return membership
+
+
+def create_organization(name: str, *, owner: CustomUser) -> tuple[Organization, Membership]:
+    """Open a new account and put its first person in it as administrator.
+
+    Sign-up is the only caller that reaches this without already belonging to an
+    organisation, so it is the one place that has to get the owner row right: the
+    first membership is ``is_owner`` and ``ADMIN``, which is what keeps a
+    self-created account from being unmanageable — and unrescuable, since the
+    platform operator is deliberately not on any customer roster.
+
+    Slug collisions are not a reason to refuse a company. Two firms can be called
+    the same thing; they just cannot share a handle.
+    """
+    cleaned = (name or "").strip()
+    if len(cleaned) < 2:
+        raise TenancyError(
+            "invalid_organization_name", "Name the account with at least 2 characters."
+        )
+
+    base = slugify(cleaned)[:70] or "account"
+    slug = base
+    suffix = 2
+    while Organization.objects.filter(slug=slug).exists():
+        slug = f"{base}-{suffix}"
+        suffix += 1
+        if suffix > 60:
+            raise TenancyError(
+                "organization_name_taken", "Too many accounts share that name. Try a more distinct one."
+            )
+
+    with transaction.atomic():
+        organization = Organization.objects.create(name=cleaned, slug=slug)
+        membership = Membership.objects.create(
+            user=owner,
+            organization=organization,
+            role=Role.ADMIN,
+            is_owner=True,
+            accepted_at=timezone.now(),
+        )
+        _sync_legacy_role(membership)
+
+    return organization, membership
 
 
 def _sync_legacy_role(membership: Membership) -> None:

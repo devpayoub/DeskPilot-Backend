@@ -164,6 +164,21 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": os.getenv("THROTTLE_ANON", "60/min"),
         "user": os.getenv("THROTTLE_USER", "600/min"),
+        # The three sign-up steps, scoped by `throttle_scope` on each view in
+        # apps/accounts/views.py. Sending mail costs money and inbox space, so
+        # issuing a code is the tightest; the code itself is capped five guesses
+        # per row regardless. All three key on client IP for an anonymous caller,
+        # which is why the rates are env-overridable — one office behind a NAT
+        # shares a single bucket.
+        "register_issue": os.getenv("THROTTLE_REGISTER_ISSUE", "5/min"),
+        "register_verify": os.getenv("THROTTLE_REGISTER_VERIFY", "10/min"),
+        "register_finalize": os.getenv("THROTTLE_REGISTER_FINALIZE", "20/hour"),
+        # Password reset. Asking for a link costs mail and can be repeated by
+        # anyone who knows an address, so it is as tight as issuing a sign-up
+        # code. Finishing one needs a 256-bit token that cannot be guessed, so the
+        # rate there is only about keeping a broken client from looping.
+        "password_forgot": os.getenv("THROTTLE_PASSWORD_FORGOT", "5/min"),
+        "password_reset": os.getenv("THROTTLE_PASSWORD_RESET", "30/min"),
     },
 }
 
@@ -191,6 +206,35 @@ CORS_ALLOWED_ORIGINS = env_list(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://127.0.0.1:3000",
 )
+
+# ---------------------------------------------------------------------------
+# Outbound email (sign-up codes)
+# ---------------------------------------------------------------------------
+#
+# ``dev.py`` falls back to the console backend when ``EMAIL_BACKEND`` is unset, so a
+# fresh clone prints the code to its own terminal and sends nothing anywhere.
+# Nothing here has a safe-looking default for a deployment: Django's own default is
+# the SMTP backend, and leaving it that way means a production deploy without
+# credentials fails loudly on the send instead of quietly dropping verification
+# codes nobody ever receives. ``EMAIL_HOST_PASSWORD`` is a secret — read from the
+# environment, never committed.
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend"
+)
+EMAIL_HOST = os.getenv("EMAIL_HOST", "localhost")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "25"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "false").lower() in {"1", "true", "yes"}
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "DeskPilot <no-reply@deskpilot.local>")
+SERVER_EMAIL = os.getenv("SERVER_EMAIL", DEFAULT_FROM_EMAIL)
+
+# The console origin, used to build the password-reset link that goes in the mail.
+# It cannot be derived from the request: the API is on its own origin and a link
+# built from ``build_absolute_uri`` would hand the user a port 8010 page that does
+# not exist. A deployment must set this to the public console URL or every reset
+# link is dead on arrival — ``prod.py`` refuses to boot otherwise.
+CONSOLE_BASE_URL = os.getenv("CONSOLE_BASE_URL", "http://localhost:3001").rstrip("/")
 
 # ---------------------------------------------------------------------------
 # Cache / Celery

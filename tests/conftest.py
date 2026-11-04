@@ -18,6 +18,8 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts.models import Role
+from apps.organizations.models import Membership, Organization
+from apps.organizations.services import default_organization
 from tests.factories import PASSWORD, make_user  # noqa: F401  (PASSWORD re-exported)
 from tests.fakes import FakeDiagnostics
 from toolcore import registry
@@ -93,6 +95,42 @@ def adapters(fake_diagnostics):
 
 
 @pytest.fixture
+def organization(db):
+    """The default workspace most of these tests act in."""
+    return default_organization()
+
+
+@pytest.fixture
+def other_organization(db):
+    """A second, unrelated workspace.
+
+    Exists for the tests whose whole point is that one account cannot read another's
+    data. Anything asserting a directory query returns nothing has to be able to say
+    "…and it is somebody else's".
+    """
+    organization, _ = Organization.objects.get_or_create(
+        slug="globex", defaults={"name": "Globex"}
+    )
+    return organization
+
+
+@pytest.fixture
+def join(db):
+    """``join(user, organization, role)`` — put a person in a workspace."""
+
+    def _join(user, organization, role):
+        membership, _ = Membership.objects.get_or_create(
+            user=user, organization=organization, defaults={"role": role}
+        )
+        if membership.role != role:
+            membership.role = role
+            membership.save(update_fields=["role"])
+        return membership
+
+    return _join
+
+
+@pytest.fixture
 def admin_user(db):
     return make_user("admin@deskpilot.test", Role.ADMIN)
 
@@ -147,5 +185,5 @@ def requester_client(requester_user) -> APIClient:
 @pytest.fixture
 def api_fake_adapters(monkeypatch, adapters):
     """Make the HTTP layer use the fake diagnostics adapter."""
-    monkeypatch.setattr("apps.guardrails.context.default_adapters", lambda: adapters)
+    monkeypatch.setattr("apps.guardrails.context.default_adapters", lambda organization=None: adapters)
     return adapters

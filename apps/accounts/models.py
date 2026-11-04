@@ -62,6 +62,11 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     date_joined = models.DateTimeField(default=timezone.now)
+    # Null until a password is written by code that knows to stamp it. Rows created
+    # before this column existed are honestly "unknown", not backfilled to the join
+    # date — telling someone their password is three weeks old because their account
+    # is would be a guess dressed up as a fact.
+    password_updated_at = models.DateTimeField(null=True, blank=True)
 
     objects = UserManager()
 
@@ -74,6 +79,17 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self) -> str:
         return self.email
+
+    def set_password(self, raw_password):
+        """Stamp when the credential changed, at the one place every change passes.
+
+        Overriding this rather than remembering to write the column in each view is
+        the point: sign-up, invitation accept, an administrator setting a member's
+        password, self-service and reset all reach the hash through here, so a path
+        added tomorrow cannot forget to record itself.
+        """
+        super().set_password(raw_password)
+        self.password_updated_at = timezone.now()
 
     @property
     def role_rank(self) -> int:

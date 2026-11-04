@@ -179,6 +179,12 @@ REST_FRAMEWORK = {
         # rate there is only about keeping a broken client from looping.
         "password_forgot": os.getenv("THROTTLE_PASSWORD_FORGOT", "5/min"),
         "password_reset": os.getenv("THROTTLE_PASSWORD_RESET", "30/min"),
+        # Changing a password you already know. The caller holds a valid access
+        # token, so this is not a guessing oracle against a stranger — but it is the
+        # one endpoint that turns a guess into a permanent win, because a success
+        # mints a fresh refresh token *and* evicts every other session. Ten an hour
+        # is room to mistype a few times, not room to run a list.
+        "password_change": os.getenv("THROTTLE_PASSWORD_CHANGE", "10/hour"),
     },
 }
 
@@ -193,6 +199,10 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": False,
     "AUTH_HEADER_TYPES": ("Bearer",),
+    # Rotation leaves the new refresh token unrecorded by the library, which would
+    # make both the security page and "end every other session" quietly wrong.
+    # See apps/accounts/tokens.py.
+    "TOKEN_REFRESH_SERIALIZER": "apps.accounts.tokens.LedgerRefreshTokenSerializer",
 }
 
 SPECTACULAR_SETTINGS = {

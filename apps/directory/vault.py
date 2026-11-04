@@ -21,6 +21,10 @@ def purge_expired() -> int:
     survives forever, so a database dump would still yield every password the
     agent ever generated — including ones still valid somewhere else. Expiry has
     to mean deletion, not just a closed door.
+
+    Deliberately not tenant-scoped: this is the one query that should cross every
+    organisation, because an expired secret in someone else's workspace is still a
+    secret that failed to die.
     """
     removed, _ = PasswordReset.objects.filter(expires_at__lte=timezone.now()).delete()
     if removed:
@@ -28,10 +32,21 @@ def purge_expired() -> int:
     return removed
 
 
-def store_password(sam: str, password: str, force_change: bool = True) -> str:
-    """Persist a generated password and return the opaque reference the agent sees."""
+def store_password(organization, sam: str, password: str, force_change: bool = True) -> str:
+    """Persist a generated password and return the opaque reference the agent sees.
+
+    The caller's organisation is recorded on the row so that retrieval can be checked
+    against it. Without that, a reference that leaked into a log line would be
+    spendable by anyone holding ``directory:read`` anywhere on the platform.
+    """
+    if organization is None:
+        raise ValueError(
+            "Refusing to vault a password with no owning organisation — it could "
+            "not be scoped on the way back out."
+        )
     purge_expired()
     record = PasswordReset.objects.create(
+        organization=organization,
         sam=sam,
         password_ciphertext=encrypt(password),
         force_change=force_change,
@@ -41,9 +56,16 @@ def store_password(sam: str, password: str, force_change: bool = True) -> str:
     return str(record.reference)
 
 
-def retrieve_password(reference) -> PasswordReset:
-    """Fetch a stored password. Raises ValueError when unusable."""
-    record = PasswordReset.objects.filter(reference=reference).first()
+def retrieve_password(reference, organization) -> PasswordReset:
+    """Fetch a stored password. Raises ValueError when unusable.
+
+    An unknown reference and a reference owned by another workspace answer the same
+    way on purpose: "no password reset with that reference" tells an attacker that
+    the uuid they found in a log is real without handing them the secret.
+    """
+    if organization is None:
+        raise ValueError("No password reset with that reference.")
+    record = PasswordReset.objects.filter(reference=reference, organization=organization).first()
     if record is None:
         raise ValueError("No password reset with that reference.")
     if record.is_expired:

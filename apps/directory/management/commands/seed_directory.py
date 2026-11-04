@@ -2,6 +2,10 @@
 
 Idempotent: re-running updates the same rows rather than duplicating them. Every
 row is marked ``source=fake``.
+
+Seeds one organisation. ``--organization`` names which, so a second workspace can be
+given its own directory for a tenancy test instead of having rows appended to the
+first one's.
 """
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from apps.directory.models import Device, DirectoryGroup, Employee
+from apps.organizations.models import DEFAULT_ORGANIZATION_SLUG, Organization
 
 GROUPS = [
     ("IT Support", False),
@@ -42,17 +47,36 @@ DEVICES = [
 
 
 class Command(BaseCommand):
-    help = "Seed the fake directory tenant (groups, employees, devices)."
+    help = "Seed the fake directory tenant (groups, employees, devices) for one organisation."
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--organization",
+            default=DEFAULT_ORGANIZATION_SLUG,
+            help="Slug of the organisation to seed. It must already exist; this "
+            "command will not invent a workspace because a typo asked for one.",
+        )
 
     def handle(self, *args, **options):
         now = timezone.now()
 
+        organization = Organization.objects.filter(slug=options["organization"]).first()
+        if organization is None:
+            self.stderr.write(
+                self.style.ERROR(f"No organisation with slug '{options['organization']}'.")
+            )
+            return
+
+        # Every identity string is derived from the workspace being seeded, so a
+        # second tenant does not end up with a DeskPilot address domain on its people.
+        domain = organization.slug
         group_objects = {}
         for name, privileged in GROUPS:
             group, _ = DirectoryGroup.objects.update_or_create(
+                organization=organization,
                 name=name,
                 defaults={
-                    "distinguished_name": f"cn={name},ou=groups,dc=deskpilot,dc=test",
+                    "distinguished_name": f"cn={name},ou=groups,dc={domain},dc=test",
                     "is_privileged": privileged,
                 },
             )
@@ -60,12 +84,13 @@ class Command(BaseCommand):
 
         for sam, display_name, dept, title, locked, bad_pw, groups in EMPLOYEES:
             employee, _ = Employee.objects.update_or_create(
+                organization=organization,
                 sam=sam,
                 defaults={
                     "external_id": f"fake-{sam}",
-                    "upn": f"{sam}@deskpilot.test",
+                    "upn": f"{sam}@{domain}.test",
                     "display_name": display_name,
-                    "email": f"{sam}@deskpilot.test",
+                    "email": f"{sam}@{domain}.test",
                     "department": dept,
                     "title": title,
                     "account_enabled": True,
@@ -80,8 +105,9 @@ class Command(BaseCommand):
             employee.groups.set([group_objects[name] for name in groups])
 
         for hostname, model, sam, bitlocker, free_pct in DEVICES:
-            owner = Employee.objects.filter(sam=sam).first()
+            owner = Employee.objects.filter(organization=organization, sam=sam).first()
             Device.objects.update_or_create(
+                organization=organization,
                 hostname=hostname,
                 defaults={
                     "model": model,
@@ -97,6 +123,6 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"Seeded {len(GROUPS)} groups, {len(EMPLOYEES)} employees, "
-                f"{len(DEVICES)} devices."
+                f"{len(DEVICES)} devices for {organization.name}."
             )
         )

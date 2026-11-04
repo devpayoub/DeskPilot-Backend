@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    ChangePasswordView,
     ForgotPasswordView,
     LoginView,
     LogoutView,
@@ -9,6 +10,8 @@ from .views import (
     RegistrationCodeIssueView,
     RegistrationCodeVerifyView,
     ResetPasswordView,
+    SessionListView,
+    SessionRevokeView,
 )
 
 urlpatterns = [
@@ -23,4 +26,10 @@ urlpatterns = [
     # Password reset: a link to the address on file, then the new password.
     path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
     path("reset-password/", ResetPasswordView.as_view(), name="reset-password"),
+    # Self-service account and security. A PATCH on /me/ rather than a separate
+    # profile endpoint: the payload is the same user object the page already
+    # fetched, and one endpoint per record is what keeps the two from drifting.
+    path("change-password/", ChangePasswordView.as_view(), name="change-password"),
+    path("sessions/", SessionListView.as_view(), name="session-list"),
+    path("sessions/<str:jti>/", SessionRevokeView.as_view(), name="session-revoke"),
 ]

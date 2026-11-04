@@ -117,7 +117,7 @@ def issue_reset(raw_email: object) -> bool:
     return True
 
 
-def _check_password_strength(password: str, user) -> None:
+def check_password_strength(password: str, user) -> None:
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ResetError(
             "weak_password", f"Choose a password of at least {MIN_PASSWORD_LENGTH} characters."
@@ -152,7 +152,7 @@ def finalize_reset(raw_token: object, raw_password: object) -> CustomUser:
         raise ResetError("account_inactive", "This account has been deactivated.")
 
     password = str(raw_password or "")
-    _check_password_strength(password, user)
+    check_password_strength(password, user)
 
     with transaction.atomic():
         # Re-read inside the transaction: two tabs can open the same link at once
@@ -168,7 +168,7 @@ def finalize_reset(raw_token: object, raw_password: object) -> CustomUser:
         user.set_password(password)
         # Django's own update_last_login is off in this project, so nothing else
         # records the event; the token row below is the timestamp that matters.
-        user.save(update_fields=["password"])
+        user.save(update_fields=["password", "password_updated_at"])
 
         locked.consumed_at = timezone.now()
         locked.save(update_fields=["consumed_at"])
@@ -182,23 +182,28 @@ def finalize_reset(raw_token: object, raw_password: object) -> CustomUser:
     return user
 
 
-def revoke_sessions(user) -> None:
-    """Blacklist the account's outstanding refresh tokens.
+def revoke_sessions(user) -> int:
+    """Blacklist the account's outstanding refresh tokens, and say how many.
 
     Somebody who resets their password because of a stolen session expects that
     session to end. The access token still rides out its fifteen minutes — this API
     has no per-request revocation list for those, and adding one would cost a
     database read on every call — but a refresh is the part that outlives the tab,
     and it dies here.
-    """
-    from rest_framework_simplejwt.token_blacklist.models import (
-        BlacklistedToken,
-        OutstandingToken,
-    )
 
-    outstanding = OutstandingToken.objects.filter(
-        user=user, blacklistedtoken__isnull=True
-    ).only("pk")
+    The count is returned because the change-password endpoint tells the person how
+    many sign-ins it just ended. That number is the difference between "your
+    password changed" and "you are the only one left holding the account" — which is
+    why it counts the same set the security page lists. SimpleJWT keeps expired rows
+    in the ledger until ``flushexpiredtokens`` runs; blacklisting one ends no
+    sign-in, and reporting it inflates the number a frightened person is reading.
+    """
+    from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+    from apps.accounts.sessions import live_sessions
+
+    outstanding = live_sessions(user)
     BlacklistedToken.objects.bulk_create(
-        [BlacklistedToken(token=token) for token in outstanding]
+        [BlacklistedToken(token=row) for row in outstanding]
     )
+    return len(outstanding)

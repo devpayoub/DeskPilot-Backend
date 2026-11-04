@@ -54,6 +54,14 @@ PUBLIC_ENDPOINTS = {
     # thing that authorises the last step is the token in the emailed link.
     "forgot-password",
     "reset-password",
+    # Self-service account settings. Not public — every one requires a session — but
+    # they cannot gate on a capability either: the thing being read or written is the
+    # caller's own record, so `IsAuthenticated` plus "this endpoint only ever touches
+    # request.user" is the whole authority. Adding a field that belongs to somebody
+    # else would mean removing these from this list, not loosening a role.
+    "change-password",
+    "session-list",
+    "session-revoke",
     "schema",
     "docs",
     # The generated API reference. Renders the schema; every endpoint inside it

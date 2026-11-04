@@ -3,6 +3,14 @@
 The point of this app is to give the agent a realistic identity surface without
 requiring a Windows domain to run the project. ``source`` records where a row came
 from, so a fake tenant can never be mistaken for a real one in an audit.
+
+Every row belongs to one ``Organization``. An identity surface is the most private
+thing a company has, so a directory shared between workspaces would be worse than a
+leak of tickets: two unrelated companies would each hold the other's complete staff
+list, machine inventory and group membership. Identity names are therefore unique
+*within* an organisation, not across the platform — ``sam``, ``hostname`` and group
+``name`` are corporate-internal identifiers that collide between companies all the
+time.
 """
 from __future__ import annotations
 
@@ -13,7 +21,10 @@ from django.utils import timezone
 
 
 class DirectoryGroup(models.Model):
-    name = models.CharField(max_length=150, unique=True)
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.CASCADE, related_name="directory_groups"
+    )
+    name = models.CharField(max_length=150)
     distinguished_name = models.CharField(max_length=500, blank=True)
     is_privileged = models.BooleanField(
         default=False,
@@ -22,6 +33,12 @@ class DirectoryGroup(models.Model):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "name"],
+                name="uniq_directory_group_name_per_organization",
+            )
+        ]
 
     def __str__(self) -> str:
         return self.name
@@ -32,8 +49,11 @@ class Employee(models.Model):
         FAKE = "fake", "Fake tenant"
         LDAP = "ldap", "LDAP"
 
-    external_id = models.CharField(max_length=120, unique=True)
-    sam = models.CharField(max_length=64, unique=True, help_text="sAMAccountName")
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.CASCADE, related_name="employees"
+    )
+    external_id = models.CharField(max_length=120)
+    sam = models.CharField(max_length=64, help_text="sAMAccountName")
     upn = models.CharField(max_length=255, blank=True)
     display_name = models.CharField(max_length=150)
     email = models.EmailField(blank=True)
@@ -56,14 +76,30 @@ class Employee(models.Model):
 
     class Meta:
         ordering = ["sam"]
-        indexes = [models.Index(fields=["sam"]), models.Index(fields=["locked_out"])]
+        indexes = [
+            models.Index(fields=["organization", "sam"]),
+            models.Index(fields=["locked_out"]),
+        ]
+        constraints = [
+            # Both names are corporate-internal identifiers. Two companies can each
+            # have a `j.smith`, and a platform-wide unique constraint would make the
+            # second one's sync fail — which reads as a data problem rather than the
+            # tenancy bug it is.
+            models.UniqueConstraint(fields=["organization", "sam"], name="uniq_employee_sam_per_organization"),
+            models.UniqueConstraint(
+                fields=["organization", "external_id"], name="uniq_employee_external_id_per_organization"
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.sam} ({self.display_name})"
 
 
 class Device(models.Model):
-    hostname = models.CharField(max_length=120, unique=True)
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.CASCADE, related_name="directory_devices"
+    )
+    hostname = models.CharField(max_length=120)
     serial = models.CharField(max_length=120, blank=True)
     model = models.CharField(max_length=120, blank=True)
     os_build = models.CharField(max_length=120, blank=True)
@@ -76,6 +112,11 @@ class Device(models.Model):
 
     class Meta:
         ordering = ["hostname"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "hostname"], name="uniq_device_hostname_per_organization"
+            )
+        ]
 
     def __str__(self) -> str:
         return self.hostname
@@ -91,8 +132,17 @@ class PasswordReset(models.Model):
     The column holds **ciphertext**, not the password. Keeping it out of the prompt
     is only half the job; a database dump would otherwise hand over working
     credentials. See ``crypto.py``.
+
+    ``organization`` is what makes retrieval safe. A reference is a random UUID, so it
+    cannot be guessed — but it does get logged, and a holder of ``directory:read`` in
+    one workspace who came across one from another would otherwise be handed a working
+    corporate password. The reference itself stays globally unique: it is an opaque
+    token, not a name two companies could both use.
     """
 
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.CASCADE, related_name="password_resets"
+    )
     reference = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     sam = models.CharField(max_length=64)
     password_ciphertext = models.TextField()

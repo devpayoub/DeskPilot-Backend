@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from django.db.models import Q
 from django.http import Http404
 from rest_framework import status
 from rest_framework.response import Response
@@ -19,6 +20,21 @@ from .vault import retrieve_password
 logger = logging.getLogger(__name__)
 
 
+def _tenant(request):
+    """The organisation whose directory this request may read.
+
+    ``None`` means the caller belongs to no workspace — a platform superuser who did
+    not name one with an ``X-Organization`` header. Every view below answers as if the
+    data simply was not there, rather than falling back to the whole table. That is
+    stricter than the ``if organization is not None: filter(...)`` idiom used by the
+    audit views, and the difference is deliberate: an audit row is a record about a
+    workspace, while a directory is the complete staff list, machine inventory and
+    group membership of one company. An operator who genuinely needs a cross-tenant
+    read says which workspace they mean.
+    """
+    return getattr(request, "organization", None)
+
+
 class EmployeeListView(APIView):
     """The directory, for the console's picker. Read-only."""
 
@@ -27,11 +43,14 @@ class EmployeeListView(APIView):
 
     def get(self, request):
         needle = request.query_params.get("q", "").strip()
-        queryset = Employee.objects.prefetch_related("groups", "devices")
+        queryset = Employee.objects.filter(organization=_tenant(request)).prefetch_related(
+            "groups", "devices"
+        )
         if needle:
-            queryset = queryset.filter(sam__icontains=needle) | queryset.filter(
-                display_name__icontains=needle
-            )
+            # One filter, not two querysets unioned: the previous `|` of two
+            # `queryset.filter(...)` calls silently dropped the prefetch and could
+            # return the same employee twice.
+            queryset = queryset.filter(Q(sam__icontains=needle) | Q(display_name__icontains=needle))
         paginator = DefaultPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
         rows = [
@@ -54,7 +73,9 @@ class EmployeeDetailView(APIView):
     permission_classes = [HasCapability]
 
     def get(self, request, sam):
-        found = DatabaseDirectory().lookup_user(sam)
+        # The adapter is bound to this request's tenant, so a person who exists in
+        # another workspace is simply not found here.
+        found = DatabaseDirectory(_tenant(request)).lookup_user(sam)
         if found is None:
             raise Http404("No such user.")
         return Response(found)
@@ -67,7 +88,9 @@ class DeviceListView(APIView):
     def get(self, request):
         paginator = DefaultPagination()
         page = paginator.paginate_queryset(
-            Device.objects.select_related("assigned_employee"), request, view=self
+            Device.objects.filter(organization=_tenant(request)).select_related("assigned_employee"),
+            request,
+            view=self,
         )
         rows = [
             {
@@ -94,7 +117,7 @@ class PasswordResetRetrievalView(APIView):
 
     def get(self, request, reference):
         try:
-            record = retrieve_password(reference)
+            record = retrieve_password(reference, _tenant(request))
         except ValueError as exc:
             return Response(
                 {"error": {"code": "unavailable", "message": str(exc)}},

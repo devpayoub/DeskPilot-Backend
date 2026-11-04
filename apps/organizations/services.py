@@ -420,7 +420,7 @@ def create_member(
         # An account that already existed but was switched off is being given a new
         # credential on purpose, so it comes back on with it.
         user.is_active = True
-        user.save(update_fields=["password", "is_active"])
+        user.save(update_fields=["password", "password_updated_at", "is_active"])
 
         membership = Membership.objects.create(
             user=user,
@@ -455,7 +455,7 @@ def set_member_password(
         user.set_password(chosen)
         # Deliberately not touching ``is_active``: resetting a password must not
         # quietly undo a suspension an administrator made for a reason.
-        user.save(update_fields=["password"])
+        user.save(update_fields=["password", "password_updated_at"])
 
         if membership.accepted_at is None:
             # A pending invitation is satisfied by a real password; the token is
@@ -555,7 +555,7 @@ def accept_invite(raw_token: str, password: str) -> Membership:
     with transaction.atomic():
         user = membership.user
         user.set_password(password)
-        user.save(update_fields=["password"])
+        user.save(update_fields=["password", "password_updated_at"])
 
         membership.accepted_at = timezone.now()
         # Single use: clearing the hash makes a replay a plain "not valid".

@@ -38,8 +38,34 @@ def _serialise(employee: Employee) -> dict:
 
 
 class DatabaseDirectory:
+    """The directory of **one** organisation.
+
+    The tenant is given once, when the adapter is built, instead of being passed to
+    every method. That keeps ``DirectoryAdapter`` — and so ``LdapDirectory``, the
+    shared contract test and the six tool handlers — unchanged, and it means a caller
+    cannot forget the scope on one call: there is no version of this object that sees
+    the whole platform.
+
+    With no organisation it reads nothing at all. Every row in this app is
+    somebody's staff list, so an unbound adapter returning data would be the leak
+    this class exists to close.
+    """
+
+    def __init__(self, organization=None) -> None:
+        self.organization = organization
+
+    def _employees(self):
+        if self.organization is None:
+            return Employee.objects.none()
+        return Employee.objects.filter(organization=self.organization)
+
+    def _groups(self):
+        if self.organization is None:
+            return DirectoryGroup.objects.none()
+        return DirectoryGroup.objects.filter(organization=self.organization)
+
     def _get(self, sam: str) -> Employee:
-        employee = Employee.objects.filter(sam__iexact=sam).first()
+        employee = self._employees().filter(sam__iexact=sam).first()
         if employee is None:
             raise ToolExecutionError(f"User '{sam}' was not found.")
         return employee
@@ -48,11 +74,12 @@ class DatabaseDirectory:
         needle = (query or "").strip()
         if not needle:
             return None
-        employee = Employee.objects.filter(
+        employees = self._employees()
+        employee = employees.filter(
             Q(sam__iexact=needle) | Q(email__iexact=needle) | Q(upn__iexact=needle)
         ).first()
         if employee is None:
-            employee = Employee.objects.filter(
+            employee = employees.filter(
                 Q(display_name__icontains=needle) | Q(sam__icontains=needle)
             ).first()
         return _serialise(employee) if employee else None
@@ -63,7 +90,7 @@ class DatabaseDirectory:
         if not group:
             raise ToolExecutionError("Provide either 'group' or 'sam'.")
 
-        record = DirectoryGroup.objects.filter(name__iexact=group).first()
+        record = self._groups().filter(name__iexact=group).first()
         if record is None:
             raise ToolExecutionError(f"Group '{group}' was not found.")
         return {
@@ -114,7 +141,7 @@ class DatabaseDirectory:
     def _change_membership(self, group: str, sam: str, *, dry_run: bool, add: bool) -> dict:
         ensure_not_privileged(group)
         employee = self._get(sam)
-        record = DirectoryGroup.objects.filter(name__iexact=group).first()
+        record = self._groups().filter(name__iexact=group).first()
         if record is None:
             raise ToolExecutionError(f"Group '{group}' was not found.")
 

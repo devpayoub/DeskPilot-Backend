@@ -20,12 +20,17 @@ pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def seeded():
-    vpn, _ = DirectoryGroup.objects.get_or_create(name="VPN Users")
+def seeded(organization):
+    vpn, _ = DirectoryGroup.objects.get_or_create(
+        organization=organization, name="VPN Users"
+    )
     admins, _ = DirectoryGroup.objects.get_or_create(
-        name="Domain Admins", defaults={"is_privileged": True}
+        organization=organization,
+        name="Domain Admins",
+        defaults={"is_privileged": True},
     )
     employee = Employee.objects.create(
+        organization=organization,
         external_id="fake-j.doe",
         sam=SAM,
         upn="j.doe@deskpilot.test",
@@ -41,8 +46,8 @@ def seeded():
 
 
 @pytest.fixture
-def directory(seeded) -> DatabaseDirectory:
-    return DatabaseDirectory()
+def directory(organization, seeded) -> DatabaseDirectory:
+    return DatabaseDirectory(organization)
 
 
 class TestDatabaseDirectory(DirectoryContract):
@@ -69,8 +74,8 @@ class TestDatabaseDirectory(DirectoryContract):
 # ---------------------------------------------------------------------------
 # The identity tools, through the chokepoint
 # ---------------------------------------------------------------------------
-def test_lookup_user_tool_reports_the_account_state(desk_user, seeded):
-    context = build_context(desk_user)
+def test_lookup_user_tool_reports_the_account_state(desk_user, organization, seeded):
+    context = build_context(desk_user, organization=organization)
 
     result = execute_tool("lookup_user", {"query": SAM}, context)
 
@@ -79,8 +84,8 @@ def test_lookup_user_tool_reports_the_account_state(desk_user, seeded):
     assert GROUP in result["user"]["groups"]
 
 
-def test_lookup_user_tool_handles_a_miss(desk_user, seeded):
-    context = build_context(desk_user)
+def test_lookup_user_tool_handles_a_miss(desk_user, organization, seeded):
+    context = build_context(desk_user, organization=organization)
 
     result = execute_tool("lookup_user", {"query": "nobody.here"}, context)
 
@@ -88,10 +93,11 @@ def test_lookup_user_tool_handles_a_miss(desk_user, seeded):
     assert result["user"] is None
 
 
-def test_reset_password_never_returns_the_secret(technician_user, seeded):
+def test_reset_password_never_returns_the_secret(technician_user, organization, seeded):
     """The generated password must not appear anywhere the model can read."""
     context = build_context(
         technician_user,
+        organization=organization,
         approval_token=args_hash({"sam": SAM, "force_change": True}),
     )
 
@@ -101,7 +107,7 @@ def test_reset_password_never_returns_the_secret(technician_user, seeded):
     assert "password_reference" in result
 
     # The secret is retrievable by a human, once.
-    stored = retrieve_password(result["password_reference"])
+    stored = retrieve_password(result["password_reference"], organization)
     assert len(stored.reveal_password()) >= 16
     assert stored.sam == SAM
     # ...but the column itself must not hold it in the clear.
@@ -109,21 +115,23 @@ def test_reset_password_never_returns_the_secret(technician_user, seeded):
     assert stored.password_ciphertext.startswith("gAAAAA"), "Fernet token expected"
 
 
-def _context_with_approval_recorder(user):
+def _context_with_approval_recorder(user, organization):
     """Mirror what the agent runtime does: persist an approval when one is needed."""
     run = AgentRun.objects.create(
-        ticket=create_ticket(subject="account issue", body="cannot sign in"),
+        ticket=create_ticket(subject="account issue", body="cannot sign in", organization=organization),
         objective="o",
         status=AgentRun.Status.RUNNING,
     )
     context = build_context(
-        user, on_approval_required=lambda approval: approvals.create_approval(run, approval)
+        user,
+        organization=organization,
+        on_approval_required=lambda approval: approvals.create_approval(run, approval),
     )
     return context, run
 
 
-def test_reset_password_pauses_for_approval(technician_user, seeded):
-    context, run = _context_with_approval_recorder(technician_user)
+def test_reset_password_pauses_for_approval(technician_user, organization, seeded):
+    context, run = _context_with_approval_recorder(technician_user, organization)
 
     with pytest.raises(Exception) as excinfo:
         execute_tool("reset_password", {"sam": SAM, "force_change": True}, context)
@@ -136,9 +144,10 @@ def test_reset_password_pauses_for_approval(technician_user, seeded):
     assert "password" not in (request.preview or {}), "a preview must not contain a secret"
 
 
-def test_privileged_group_change_is_denied_at_the_tool_layer(technician_user, seeded):
+def test_privileged_group_change_is_denied_at_the_tool_layer(technician_user, organization, seeded):
     context = build_context(
         technician_user,
+        organization=organization,
         approval_token=args_hash({"group": "Domain Admins", "sam": SAM}),
     )
 
@@ -147,10 +156,10 @@ def test_privileged_group_change_is_denied_at_the_tool_layer(technician_user, se
 
 
 def test_privileged_group_is_refused_before_any_approval_is_created(
-    technician_user, seeded
+    technician_user, organization, seeded
 ):
     """No approval can authorise this, so no approver should ever be asked."""
-    context, run = _context_with_approval_recorder(technician_user)
+    context, run = _context_with_approval_recorder(technician_user, organization)
 
     with pytest.raises(ToolDenied, match="privileged group"):
         execute_tool("add_group_member", {"group": "Domain Admins", "sam": SAM}, context)
@@ -158,15 +167,15 @@ def test_privileged_group_is_refused_before_any_approval_is_created(
     assert ApprovalRequest.objects.filter(run=run).count() == 0
 
 
-def test_a_requester_cannot_look_up_users(requester_user, seeded):
-    context = build_context(requester_user)
+def test_a_requester_cannot_look_up_users(requester_user, organization, seeded):
+    context = build_context(requester_user, organization=organization)
 
     with pytest.raises(ToolDenied, match="may not call"):
         execute_tool("lookup_user", {"query": SAM}, context)
 
 
-def test_group_membership_change_requires_approval(technician_user, seeded):
-    context, run = _context_with_approval_recorder(technician_user)
+def test_group_membership_change_requires_approval(technician_user, organization, seeded):
+    context, run = _context_with_approval_recorder(technician_user, organization)
 
     with pytest.raises(Exception):
         execute_tool("add_group_member", {"group": GROUP, "sam": SAM}, context)
